@@ -1,10 +1,7 @@
-# src/download_hoopr_2024.R
-# Downloads NBA player box scores for the 2024 season start year (2024–25)
-# and saves a CSV we can train on.
-
 options(timeout = 600)
+dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
 
-# Install hoopR from SportsDataverse R-universe if not present
+# Install hoopR if missing
 if (!requireNamespace("hoopR", quietly = TRUE)) {
   install.packages(
     "hoopR",
@@ -12,22 +9,13 @@ if (!requireNamespace("hoopR", quietly = TRUE)) {
   )
 }
 
-if (!requireNamespace("dplyr", quietly = TRUE)) {
-  install.packages("dplyr", repos = "https://cloud.r-project.org")
-}
-
 library(hoopR)
-library(dplyr)
 
-dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
+# 2024 = 2024–25 season (season start year)
+df <- hoopR::load_nba_player_box(seasons = 2024)
 
-# This loads NBA player box scores from the hoopR data repo
-# seasons = 2024 corresponds to the 2024–25 NBA season in most hoopR examples
-nba_player_box <- hoopR::load_nba_player_box(seasons = 2024)
+out <- "data/raw/nba_player_box_2024.csv"
+write.csv(df, out, row.names = FALSE)
 
-# Save CSV for Python training
-out_path <- "data/raw/nba_player_box_2024.csv"
-write.csv(nba_player_box, out_path, row.names = FALSE)
-
-cat("Saved:", out_path, "\n")
-cat("Rows:", nrow(nba_player_box), "Cols:", ncol(nba_player_box), "\n")
+cat("Saved:", out, "\n")
+cat("Rows:", nrow(df), "Cols:", ncol(df), "\n")
