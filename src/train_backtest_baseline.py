@@ -103,7 +103,9 @@ def train_one(df: pd.DataFrame, target: str):
     preds = model.predict(X_test)
 
     mae = float(mean_absolute_error(y_test, preds))
-    rmse = float(mean_squared_error(y_test, preds, squared=False))
+    mse = float(mean_squared_error(y_test, preds))  # works on all sklearn versions
+    rmse = mse ** 0.5
+
     return model, {"mae": mae, "rmse": rmse, "n_test": int(len(test_df))}
 
 if __name__ == "__main__":
