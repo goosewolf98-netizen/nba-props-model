@@ -11,10 +11,7 @@ on:
         description: "Stat to predict"
         required: true
         type: choice
-        options:
-          - pts
-          - reb
-          - ast
+        options: [pts, reb, ast]
       line:
         description: "Prop line (example: 24.5)"
         required: true
@@ -54,6 +51,10 @@ jobs:
       - name: Train baseline models
         run: |
           python src/train_backtest_baseline.py
+
+      - name: Fetch ESPN injuries (context)
+        run: |
+          python src/fetch_espn_injuries.py
 
       - name: Make a pick for the requested player
         run: |
