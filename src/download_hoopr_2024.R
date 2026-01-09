@@ -1,12 +1,17 @@
 options(timeout = 600)
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
 dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
 
-# Install hoopR if missing
+# 1) Try CRAN install first (most reliable)
 if (!requireNamespace("hoopR", quietly = TRUE)) {
-  install.packages(
-    "hoopR",
-    repos = c("https://sportsdataverse.r-universe.dev", "https://cloud.r-project.org")
-  )
+  install.packages("hoopR")
+}
+
+# 2) If CRAN didn't work, fallback to GitHub
+if (!requireNamespace("hoopR", quietly = TRUE)) {
+  install.packages("remotes")
+  remotes::install_github("sportsdataverse/hoopR")
 }
 
 library(hoopR)
