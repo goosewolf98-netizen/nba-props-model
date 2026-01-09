@@ -9,24 +9,18 @@ RAW_DIR = Path("data/raw")
 def find_data_file() -> Path:
     files = sorted(RAW_DIR.glob("*.csv")) + sorted(RAW_DIR.glob("*.parquet"))
     if not files:
-        raise FileNotFoundError(
-            "No data file found in data/raw. The download step did not create a CSV."
-        )
+        raise FileNotFoundError("No data file found in data/raw. Download step failed.")
     return files[0]
 
 def load_df(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+    return pd.read_csv(path) if path.suffix == ".csv" else pd.read_parquet(path)
 
 def pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     cols = list(df.columns)
-    lower = {c.lower(): c for c in cols}
-
-    # 1) exact match
+    lower_map = {c.lower(): c for c in cols}
     for cand in candidates:
-        if cand in lower:
-            return lower[cand]
-
-    # 2) contains match
+        if cand in lower_map:
+            return lower_map[cand]
     for c in cols:
         cl = c.lower()
         for cand in candidates:
@@ -35,7 +29,6 @@ def pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # Auto-detect common column names (no manual editing needed)
     player_c = pick_col(df, ["player", "player_name", "athlete", "athlete_name", "athlete_display_name", "name"])
     date_c   = pick_col(df, ["game_date", "date", "start_date"])
     min_c    = pick_col(df, ["min", "minutes", "mp"])
@@ -49,7 +42,6 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     }.items() if v is None]
 
     if missing:
-        # Print columns in the Actions log so we can fix fast if needed
         print("Available columns:", list(df.columns))
         raise ValueError(f"Could not find required columns: {missing}")
 
@@ -71,9 +63,9 @@ def add_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
     grp = df.groupby("player", group_keys=False)
 
     for stat in ["min", "pts", "reb", "ast"]:
-        df[f"{stat}_r5"]  = grp[stat].shift(1).rolling(5,  min_periods=1).mean()
-        df[f"{stat}_r10"] = grp[stat].shift(1).rolling(10, min_periods=1).mean()
-        df[f"{stat}_sd10"]= grp[stat].shift(1).rolling(10, min_periods=2).std()
+        df[f"{stat}_r5"]   = grp[stat].shift(1).rolling(5,  min_periods=1).mean()
+        df[f"{stat}_r10"]  = grp[stat].shift(1).rolling(10, min_periods=1).mean()
+        df[f"{stat}_sd10"] = grp[stat].shift(1).rolling(10, min_periods=2).std()
 
     df["gp_last14"] = grp["game_date"].shift(1).rolling(14, min_periods=1).count()
     return df.fillna(0)
