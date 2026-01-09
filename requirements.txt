@@ -1,8 +1,9 @@
 pandas
 numpy
-requests
-pyarrow
 scikit-learn
 xgboost
 joblib
-python-dateutil
+requests
+lxml
+html5lib
+beautifulsoup4
