@@ -43,7 +43,7 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
         "pts": pts_c, "reb": reb_c, "ast": ast_c
     }.items() if v is None]
     if missing:
-        raise ValueError(f"Could not find required columns: {missing}. Available: {list(df.columns)[:40]}")
+        raise ValueError(f"Missing columns {missing}. Have: {list(df.columns)[:50]}")
 
     df = df.rename(columns={
         player_c: "player",
@@ -63,10 +63,12 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
 def add_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["player", "game_date"]).copy()
     grp = df.groupby("player", group_keys=False)
+
     for stat in ["min", "pts", "reb", "ast"]:
         df[f"{stat}_r5"]   = grp[stat].shift(1).rolling(5,  min_periods=1).mean()
         df[f"{stat}_r10"]  = grp[stat].shift(1).rolling(10, min_periods=1).mean()
         df[f"{stat}_sd10"] = grp[stat].shift(1).rolling(10, min_periods=2).std()
+
     df["gp_last14"] = grp["game_date"].shift(1).rolling(14, min_periods=1).count()
     return df.fillna(0)
 
@@ -88,9 +90,8 @@ def find_player_last_game(df: pd.DataFrame, player_query: str) -> pd.Series:
     if len(contains) > 0:
         return contains.sort_values("game_date").iloc[-1]
 
-    # write suggestions
     sample = sorted(df["player"].dropna().astype(str).unique().tolist())
-    raise ValueError(f"Player not found: '{player_query}'. Example names: {sample[:25]}")
+    raise ValueError(f"Player not found: '{player_query}'. Examples: {sample[:25]}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -119,7 +120,11 @@ def main():
         rmse = float(metrics[args.stat]["rmse"]) if args.stat in metrics else 5.0
 
         feature_cols = [c for c in df.columns if c.endswith(("_r5", "_r10", "_sd10"))] + ["gp_last14"]
-        X = last[feature_cols].to_frame().T
+
+        # IMPORTANT FIX: build a numeric dataframe (avoids object dtype)
+        X = pd.DataFrame([{c: last[c] for c in feature_cols}])
+        X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
         proj = float(model.predict(X)[0])
 
         z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
@@ -136,7 +141,7 @@ def main():
             "p_over": p_over,
             "p_under": p_under,
             "last_game_date_used": str(last["game_date"].date()),
-            "note": "Baseline model only. Injuries/teammates/matchup added next."
+            "note": "Baseline only. Next upgrades add injuries/minutes/teammate/matchup/EV."
         }
 
         (ART_DIR / "player_pick.json").write_text(json.dumps(out, indent=2))
