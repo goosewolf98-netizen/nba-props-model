@@ -1,57 +1,92 @@
 from pathlib import Path
+import json
+import requests
 import pandas as pd
 
 OUT_DIR = Path("artifacts")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-ESPN_INJ_URL = "https://www.espn.com/nba/injuries"
+TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams"
+CORE_INJ_URL = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba/teams/{team_id}/injuries?lang=en&region=us"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; nba-props-model/1.0)"
+}
 
 def write_error(msg: str):
     (OUT_DIR / "espn_injuries_error.txt").write_text(msg)
-    # also write an empty CSV so downstream steps still have a file
     (OUT_DIR / "espn_injuries.csv").write_text("error\n" + msg + "\n")
+
+def safe_get(url: str):
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def extract_team_ids(teams_json: dict) -> list[tuple[str, str]]:
+    # Returns list of (team_id, team_name)
+    out = []
+    for entry in teams_json.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", []):
+        team = entry.get("team", {})
+        tid = str(team.get("id", "")).strip()
+        name = team.get("displayName") or team.get("name") or tid
+        if tid:
+            out.append((tid, name))
+    return out
+
+def flatten_injuries(team_id: str, team_name: str, inj_json: dict) -> list[dict]:
+    rows = []
+
+    # Common patterns: "items" list OR direct list fields
+    items = inj_json.get("items") or inj_json.get("injuries") or []
+    # Sometimes it's not expanded and only has "$ref" links
+    if isinstance(items, dict):
+        items = [items]
+
+    for it in items:
+        # If item is a ref object, skip (we'd need extra calls)
+        if isinstance(it, dict) and "$ref" in it and len(it.keys()) == 1:
+            continue
+
+        athlete = it.get("athlete", {}) if isinstance(it, dict) else {}
+        rows.append({
+            "team": team_name,
+            "team_id": team_id,
+            "player": athlete.get("displayName") or athlete.get("fullName") or it.get("fullName") or "",
+            "status": it.get("status", {}).get("type") if isinstance(it.get("status"), dict) else it.get("status"),
+            "detail": it.get("details") or it.get("comment") or it.get("description") or "",
+            "date": it.get("date") or it.get("updated") or "",
+            "estimated_return_date": it.get("estimatedReturnDate") or it.get("returnDate") or "",
+        })
+
+    return rows
 
 def main():
     try:
-        # Import requests inside try so missing deps doesn't crash the workflow
-        import requests
-    except Exception as e:
-        write_error(f"requests import failed: {e}")
-        print("ESPN injuries fetch skipped (requests missing).")
-        return
-
-    try:
-        html = requests.get(ESPN_INJ_URL, timeout=30).text
-    except Exception as e:
-        write_error(f"requests.get failed: {e}")
-        print("ESPN injuries fetch skipped (network error).")
-        return
-
-    try:
-        tables = pd.read_html(html)
-        if not tables:
-            write_error("pandas.read_html returned 0 tables (page layout may have changed).")
-            print("No injury tables found.")
+        teams_json = safe_get(TEAMS_URL)
+        teams = extract_team_ids(teams_json)
+        if not teams:
+            write_error("No teams found from ESPN teams endpoint.")
             return
 
-        df = pd.concat(tables, ignore_index=True)
+        all_rows = []
+        for team_id, team_name in teams:
+            try:
+                inj_json = safe_get(CORE_INJ_URL.format(team_id=team_id))
+                all_rows.extend(flatten_injuries(team_id, team_name, inj_json))
+            except Exception:
+                # don't fail the entire workflow if one team endpoint fails
+                continue
 
-        # Light cleanup
-        df.columns = [str(c).strip() for c in df.columns]
-        for c in df.columns:
-            if df[c].dtype == object:
-                df[c] = df[c].astype(str).str.strip()
-
+        df = pd.DataFrame(all_rows)
         out_csv = OUT_DIR / "espn_injuries.csv"
         df.to_csv(out_csv, index=False)
+        print(f"Saved {out_csv} rows={len(df)} cols={len(df.columns)}")
 
-        print(f"Saved {out_csv} with {len(df)} rows and {len(df.columns)} cols")
-        print("Columns:", list(df.columns))
+        if len(df) == 0:
+            write_error("Fetched injuries but got 0 rows (endpoint may require expanding refs).")
 
     except Exception as e:
-        # Most common: missing lxml/html5lib OR ESPN HTML changed
-        write_error(f"pandas.read_html failed: {e}")
-        print("ESPN injuries parsing failed, but workflow will continue.")
+        write_error(f"ESPN injuries fetch failed: {e}")
 
 if __name__ == "__main__":
     main()
