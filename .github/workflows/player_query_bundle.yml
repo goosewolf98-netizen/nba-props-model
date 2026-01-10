@@ -48,7 +48,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Train baseline models
+      - name: Build features v1
+        run: |
+          python src/feature_factory_v1.py
+
+      - name: Train models (v1 features)
         run: |
           python src/train_backtest_baseline.py
 
