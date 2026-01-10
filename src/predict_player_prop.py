@@ -10,8 +10,12 @@ RAW_DIR = Path("data/raw")
 ART_DIR = Path("artifacts")
 
 def normal_cdf(x: float) -> float:
-    # Standard normal CDF using erf (no extra packages)
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+def write_error(msg: str):
+    ART_DIR.mkdir(parents=True, exist_ok=True)
+    (ART_DIR / "player_pick_error.txt").write_text(msg)
+    print(msg)
 
 def pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     cols = list(df.columns)
@@ -38,10 +42,8 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
         "player": player_c, "game_date": date_c, "min": min_c,
         "pts": pts_c, "reb": reb_c, "ast": ast_c
     }.items() if v is None]
-
     if missing:
-        print("Available columns:", list(df.columns))
-        raise ValueError(f"Could not find required columns: {missing}")
+        raise ValueError(f"Could not find required columns: {missing}. Available: {list(df.columns)[:40]}")
 
     df = df.rename(columns={
         player_c: "player",
@@ -54,31 +56,27 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
     df = df.dropna(subset=["game_date"])
-
     for c in ["min", "pts", "reb", "ast"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
     return df
 
 def add_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["player", "game_date"]).copy()
     grp = df.groupby("player", group_keys=False)
-
     for stat in ["min", "pts", "reb", "ast"]:
         df[f"{stat}_r5"]   = grp[stat].shift(1).rolling(5,  min_periods=1).mean()
         df[f"{stat}_r10"]  = grp[stat].shift(1).rolling(10, min_periods=1).mean()
         df[f"{stat}_sd10"] = grp[stat].shift(1).rolling(10, min_periods=2).std()
-
     df["gp_last14"] = grp["game_date"].shift(1).rolling(14, min_periods=1).count()
     return df.fillna(0)
 
 def find_data_file() -> Path:
     files = sorted(RAW_DIR.glob("*.csv")) + sorted(RAW_DIR.glob("*.parquet"))
     if not files:
-        raise FileNotFoundError("No data found in data/raw. Download step failed.")
+        raise FileNotFoundError("No data found in data/raw.")
     return files[0]
 
-def find_player_row(df: pd.DataFrame, player_query: str) -> pd.Series:
+def find_player_last_game(df: pd.DataFrame, player_query: str) -> pd.Series:
     pq = player_query.strip().lower()
     names = df["player"].astype(str)
 
@@ -88,12 +86,11 @@ def find_player_row(df: pd.DataFrame, player_query: str) -> pd.Series:
 
     contains = df[names.str.lower().str.contains(pq, na=False)]
     if len(contains) > 0:
-        # choose the player with the most recent game
         return contains.sort_values("game_date").iloc[-1]
 
-    # if no match, return suggestions
-    sample = sorted(df["player"].dropna().astype(str).unique().tolist())[:50]
-    raise ValueError(f"Player not found: '{player_query}'. Example names: {sample}")
+    # write suggestions
+    sample = sorted(df["player"].dropna().astype(str).unique().tolist())
+    raise ValueError(f"Player not found: '{player_query}'. Example names: {sample[:25]}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -102,54 +99,51 @@ def main():
     parser.add_argument("--line", required=True, type=float)
     args = parser.parse_args()
 
-    data_path = find_data_file()
-    df = pd.read_csv(data_path) if data_path.suffix == ".csv" else pd.read_parquet(data_path)
-    df = standardize_columns(df)
-    df = add_rolling_features(df)
+    try:
+        ART_DIR.mkdir(parents=True, exist_ok=True)
 
-    last = find_player_row(df, args.player)
+        data_path = find_data_file()
+        df = pd.read_csv(data_path) if data_path.suffix == ".csv" else pd.read_parquet(data_path)
+        df = standardize_columns(df)
+        df = add_rolling_features(df)
 
-    # load model + metrics produced by training step
-    model_path = ART_DIR / f"xgb_{args.stat}.joblib"
-    metrics_path = ART_DIR / "backtest_metrics.json"
-    if not model_path.exists():
-        raise FileNotFoundError(f"Missing model file: {model_path}. Did training run first?")
-    if not metrics_path.exists():
-        raise FileNotFoundError(f"Missing metrics file: {metrics_path}. Did training run first?")
+        last = find_player_last_game(df, args.player)
 
-    model = load(model_path)
-    metrics = json.loads(metrics_path.read_text())
-    rmse = float(metrics[args.stat]["rmse"])  # global RMSE as uncertainty proxy
+        model_path = ART_DIR / f"xgb_{args.stat}.joblib"
+        metrics_path = ART_DIR / "backtest_metrics.json"
+        if not model_path.exists() or not metrics_path.exists():
+            raise FileNotFoundError("Missing trained models/metrics. Run training first.")
 
-    feature_cols = [c for c in df.columns if c.endswith(("_r5", "_r10", "_sd10"))] + ["gp_last14"]
-    X = last[feature_cols].to_frame().T
-    proj = float(model.predict(X)[0])
+        model = load(model_path)
+        metrics = json.loads(metrics_path.read_text())
+        rmse = float(metrics[args.stat]["rmse"]) if args.stat in metrics else 5.0
 
-    # probability of going OVER line under normal approximation
-    # p_over = 1 - Phi((line - proj)/rmse)
-    if rmse <= 1e-9:
-        p_over = 0.5
-    else:
-        z = (args.line - proj) / rmse
+        feature_cols = [c for c in df.columns if c.endswith(("_r5", "_r10", "_sd10"))] + ["gp_last14"]
+        X = last[feature_cols].to_frame().T
+        proj = float(model.predict(X)[0])
+
+        z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
         p_over = 1.0 - normal_cdf(z)
-    p_under = 1.0 - p_over
+        p_under = 1.0 - p_over
 
-    out = {
-        "player_query": args.player,
-        "matched_player": str(last["player"]),
-        "stat": args.stat,
-        "line": args.line,
-        "projection": proj,
-        "rmse_used": rmse,
-        "p_over": p_over,
-        "p_under": p_under,
-        "last_game_date_used": str(last["game_date"].date()),
-        "note": "Baseline model. Does not yet include injuries/lineups/coach quotes/opponent features."
-    }
+        out = {
+            "player_query": args.player,
+            "matched_player": str(last["player"]),
+            "stat": args.stat,
+            "line": args.line,
+            "projection": proj,
+            "rmse_used": rmse,
+            "p_over": p_over,
+            "p_under": p_under,
+            "last_game_date_used": str(last["game_date"].date()),
+            "note": "Baseline model only. Injuries/teammates/matchup added next."
+        }
 
-    ART_DIR.mkdir(parents=True, exist_ok=True)
-    (ART_DIR / "player_pick.json").write_text(json.dumps(out, indent=2))
-    print(json.dumps(out, indent=2))
+        (ART_DIR / "player_pick.json").write_text(json.dumps(out, indent=2))
+        print(json.dumps(out, indent=2))
+
+    except Exception as e:
+        write_error(f"Prediction failed: {e}")
 
 if __name__ == "__main__":
     main()
