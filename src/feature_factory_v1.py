@@ -25,7 +25,6 @@ def _pick(df: pd.DataFrame, options):
 
 def _team_rest_table(team_box: pd.DataFrame):
     tb = team_box.copy()
-
     tb_date = _pick(tb, ["game_date", "date", "start_date", "game_datetime"])
     tb_team = _pick(tb, ["team", "team_abbreviation", "team_abbr", "team_id", "team_slug"])
 
@@ -36,20 +35,18 @@ def _team_rest_table(team_box: pd.DataFrame):
     tb["game_date"] = pd.to_datetime(tb["game_date"], errors="coerce")
     tb = tb.dropna(subset=["game_date"])
     tb["team"] = tb["team"].astype(str)
-
     tb = tb.sort_values(["team", "game_date"])
+
     tb["rest_days"] = tb.groupby("team")["game_date"].diff().dt.days
     tb["rest_days"] = tb["rest_days"].fillna(7).clip(lower=0, upper=14)
-
     tb["b2b"] = (tb["rest_days"] <= 1).astype(int)
 
     # games played in prior 7 days (excluding current)
     def games_last_7d(g):
         g = g.sort_values("game_date").copy()
         g = g.set_index("game_date")
-        # rolling count in last 7 days INCLUDING current, then subtract 1
-        c = g["b2b"].rolling("7D").count().fillna(0) - 1
-        g["games_last_7d"] = c.clip(lower=0).values
+        cnt = g["b2b"].rolling("7D").count().fillna(0) - 1
+        g["games_last_7d"] = cnt.clip(lower=0).values
         return g.reset_index()
 
     tb = tb.groupby("team", group_keys=False).apply(games_last_7d)
@@ -84,7 +81,6 @@ def build_features():
 
     pb["game_date"] = pd.to_datetime(pb["game_date"], errors="coerce")
     pb = pb.dropna(subset=["game_date"])
-
     pb["player"] = pb["player"].astype(str)
     pb["team"] = pb["team"].astype(str)
     pb["opp"] = pb["opp"].astype(str)
@@ -104,20 +100,19 @@ def build_features():
     pb["gp_last14"] = g["game_date"].shift(1).rolling(14, min_periods=1).count()
     pb = pb.fillna(0.0)
 
-    # --- team metrics (if detectable) ---
-    tb_date = _pick(tb, ["game_date", "date", "start_date", "game_datetime"])
-    tb_team = _pick(tb, ["team", "team_abbreviation", "team_abbr", "team_id", "team_slug"])
-    ortg    = _pick(tb, ["ortg", "off_rating", "offensive_rating"])
-    drtg    = _pick(tb, ["drtg", "def_rating", "defensive_rating"])
-    pace    = _pick(tb, ["pace"])
-
-    # defaults (always exist)
+    # --- team metrics (safe defaults) ---
     pb["team_ortg"] = 0.0
     pb["team_drtg"] = 0.0
     pb["team_pace"] = 0.0
     pb["opp_ortg"]  = 0.0
     pb["opp_drtg"]  = 0.0
     pb["opp_pace"]  = 0.0
+
+    tb_date = _pick(tb, ["game_date", "date", "start_date", "game_datetime"])
+    tb_team = _pick(tb, ["team", "team_abbreviation", "team_abbr", "team_id", "team_slug"])
+    ortg    = _pick(tb, ["ortg", "off_rating", "offensive_rating"])
+    drtg    = _pick(tb, ["drtg", "def_rating", "defensive_rating"])
+    pace    = _pick(tb, ["pace"])
 
     if tb_date and tb_team:
         t = tb.rename(columns={tb_date:"game_date", tb_team:"team"}).copy()
@@ -132,34 +127,32 @@ def build_features():
 
         if ren:
             t = t.rename(columns=ren)
-            keep = ["game_date","team"] + list(ren.values())
-            t = t[keep].drop_duplicates(["game_date","team"])
+            t = t[["game_date","team"] + list(ren.values())].drop_duplicates(["game_date","team"])
 
-            # merge team metrics
             tm = t.rename(columns={"ortg":"team_ortg","drtg":"team_drtg","pace":"team_pace"})
             pb = pb.merge(tm, on=["game_date","team"], how="left")
 
-            # merge opponent metrics (only works if pb["opp"] matches tb "team" keys; if not, fills 0)
             om = t.rename(columns={"team":"opp","ortg":"opp_ortg","drtg":"opp_drtg","pace":"opp_pace"})
             pb = pb.merge(om, on=["game_date","opp"], how="left")
 
-    # numeric cleanup
     for c in ["team_ortg","team_drtg","team_pace","opp_ortg","opp_drtg","opp_pace"]:
         pb[c] = pd.to_numeric(pb.get(c, 0.0), errors="coerce").fillna(0.0)
 
-    # --- REST / B2B from team_box (big prop signal) ---
+    # --- REST / B2B (SAFE: if merge fails or columns missing, fill 0) ---
     rest_tbl = _team_rest_table(tb)
-    pb["rest_days"] = 0.0
-    pb["b2b"] = 0
-    pb["games_last_7d"] = 0.0
-
     if rest_tbl is not None and len(rest_tbl) > 0:
+        rest_tbl = rest_tbl.copy()
+        rest_tbl["game_date"] = pd.to_datetime(rest_tbl["game_date"], errors="coerce")
+        rest_tbl["team"] = rest_tbl["team"].astype(str)
         pb = pb.merge(rest_tbl, on=["game_date","team"], how="left")
-        pb["rest_days"] = pd.to_numeric(pb["rest_days"], errors="coerce").fillna(0.0)
-        pb["b2b"] = pd.to_numeric(pb["b2b"], errors="coerce").fillna(0).astype(int)
-        pb["games_last_7d"] = pd.to_numeric(pb["games_last_7d"], errors="coerce").fillna(0.0)
 
-    # ✅ Keep ONLY safe numeric + core identifiers (prevents parquet type errors)
+    for col, default in [("rest_days", 0.0), ("b2b", 0), ("games_last_7d", 0.0)]:
+        if col not in pb.columns:
+            pb[col] = default
+        pb[col] = pd.to_numeric(pb[col], errors="coerce").fillna(default)
+        if col == "b2b":
+            pb[col] = pb[col].astype(int)
+
     engineered = [
         "gp_last14",
         "team_ortg","team_drtg","team_pace",
@@ -170,7 +163,6 @@ def build_features():
     keep_cols = ["player","game_date","team","opp","min","pts","reb","ast"] + engineered
     pb = pb[keep_cols].copy()
 
-    # fill any remaining NaNs
     for c in engineered + ["min","pts","reb","ast"]:
         pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
 
