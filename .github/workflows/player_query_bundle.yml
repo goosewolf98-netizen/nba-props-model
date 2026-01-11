@@ -48,18 +48,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build features v1
+      - name: Ensure artifacts folder
         run: |
-          python src/feature_factory_v1.py
+          mkdir -p artifacts
+          echo "artifacts folder ready" > artifacts/_ready.txt
 
-      - name: Train models (v1 features)
+      - name: Build features v1 (log)
         run: |
-          python src/train_backtest_baseline.py
-
-      - name: Make pick
+          python src/feature_factory_v1.py 2>&1 | tee artifacts/feature_factory.log
         continue-on-error: true
+
+      - name: Train models (log)
         run: |
-          python src/predict_player_prop.py --player "${{ inputs.player }}" --stat "${{ inputs.stat }}" --line "${{ inputs.line }}"
+          python src/train_backtest_baseline.py 2>&1 | tee artifacts/train.log
+        continue-on-error: true
+
+      - name: Make pick (log)
+        run: |
+          python src/predict_player_prop.py --player "${{ inputs.player }}" --stat "${{ inputs.stat }}" --line "${{ inputs.line }}" 2>&1 | tee artifacts/predict.log
+        continue-on-error: true
+
+      - name: Debug: list outputs
+        run: |
+          echo "==== artifacts ====" > artifacts/debug_tree.txt
+          ls -lah artifacts >> artifacts/debug_tree.txt || true
+          echo "==== data/raw ====" >> artifacts/debug_tree.txt
+          ls -lah data/raw >> artifacts/debug_tree.txt || true
 
       - name: Upload results
         if: always()
