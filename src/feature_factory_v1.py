@@ -49,26 +49,32 @@ def build_features():
 
     pb["game_date"] = pd.to_datetime(pb["game_date"], errors="coerce")
     pb = pb.dropna(subset=["game_date"])
+
     for c in ["min","pts","reb","ast"]:
         pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
 
     # --- rolling player features (no leakage) ---
     pb = pb.sort_values(["player","game_date"])
     g = pb.groupby("player", group_keys=False)
+
     for s in ["min","pts","reb","ast"]:
         pb[f"{s}_r5"]   = g[s].shift(1).rolling(5, min_periods=1).mean()
         pb[f"{s}_r10"]  = g[s].shift(1).rolling(10, min_periods=1).mean()
         pb[f"{s}_sd10"] = g[s].shift(1).rolling(10, min_periods=2).std()
+
     pb["gp_last14"] = g["game_date"].shift(1).rolling(14, min_periods=1).count()
     pb = pb.fillna(0.0)
 
-    # --- team context (SAFE: if not found, default 0s) ---
-    # Try to find team_box columns
+    # --- team context (SAFE: default to 0s if not found) ---
     tb_date = _pick(tb, ["game_date", "date", "start_date", "game_datetime"])
     tb_team = _pick(tb, ["team", "team_abbreviation", "team_abbr", "team_id"])
     ortg    = _pick(tb, ["ortg", "off_rating", "offensive_rating"])
     drtg    = _pick(tb, ["drtg", "def_rating", "defensive_rating"])
     pace    = _pick(tb, ["pace"])
+
+    pb["team_ortg"] = 0.0
+    pb["team_drtg"] = 0.0
+    pb["team_pace"] = 0.0
 
     if tb_date and tb_team:
         t = tb.rename(columns={tb_date:"game_date", tb_team:"team"}).copy()
@@ -80,16 +86,18 @@ def build_features():
         if drtg: ren[drtg] = "team_drtg"
         if pace: ren[pace] = "team_pace"
 
-        keep = ["game_date","team"] + list(ren.values())
-        t = t.rename(columns=ren)
-        t = t[["game_date","team"] + list(ren.values())].drop_duplicates(subset=["game_date","team"])
-        pb = pb.merge(t, on=["game_date","team"], how="left")
+        if ren:
+            t = t.rename(columns=ren)
+            t = t[["game_date","team"] + list(ren.values())].drop_duplicates(subset=["game_date","team"])
+            pb = pb.merge(t, on=["game_date","team"], how="left")
 
-    # Ensure these always exist (THIS FIXES YOUR CRASH)
     for col in ["team_ortg","team_drtg","team_pace"]:
-        if col not in pb.columns:
-            pb[col] = 0.0
         pb[col] = pd.to_numeric(pb[col], errors="coerce").fillna(0.0)
+
+    # ✅ IMPORTANT: keep only the columns we need (prevents Parquet type errors)
+    engineered = [c for c in pb.columns if c.endswith(("_r5","_r10","_sd10"))] + ["gp_last14","team_ortg","team_drtg","team_pace"]
+    keep_cols = ["player","game_date","team","opp","min","pts","reb","ast"] + engineered
+    pb = pb[keep_cols].copy()
 
     out = ART / "features_v1.parquet"
     pb.to_parquet(out, index=False)
