@@ -54,19 +54,19 @@ jobs:
           echo "artifacts folder ready" > artifacts/_ready.txt
 
       - name: Build features v1 (log)
+        continue-on-error: true
         run: |
           python src/feature_factory_v1.py 2>&1 | tee artifacts/feature_factory.log
-        continue-on-error: true
 
       - name: Train models (log)
+        continue-on-error: true
         run: |
           python src/train_backtest_baseline.py 2>&1 | tee artifacts/train.log
-        continue-on-error: true
 
       - name: Make pick (log)
+        continue-on-error: true
         run: |
           python src/predict_player_prop.py --player "${{ inputs.player }}" --stat "${{ inputs.stat }}" --line "${{ inputs.line }}" 2>&1 | tee artifacts/predict.log
-        continue-on-error: true
 
       - name: Debug: list outputs
         run: |
