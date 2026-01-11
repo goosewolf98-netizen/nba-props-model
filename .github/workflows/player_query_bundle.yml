@@ -11,7 +11,10 @@ on:
         description: "Stat"
         required: true
         type: choice
-        options: [pts, reb, ast]
+        options:
+          - pts
+          - reb
+          - ast
       line:
         description: "Prop line (example: 24.5)"
         required: true
@@ -51,7 +54,6 @@ jobs:
       - name: Ensure artifacts folder
         run: |
           mkdir -p artifacts
-          echo "artifacts folder ready" > artifacts/_ready.txt
 
       - name: Build features v1 (log)
         continue-on-error: true
@@ -67,13 +69,6 @@ jobs:
         continue-on-error: true
         run: |
           python src/predict_player_prop.py --player "${{ inputs.player }}" --stat "${{ inputs.stat }}" --line "${{ inputs.line }}" 2>&1 | tee artifacts/predict.log
-
-      - name: Debug: list outputs
-        run: |
-          echo "==== artifacts ====" > artifacts/debug_tree.txt
-          ls -lah artifacts >> artifacts/debug_tree.txt || true
-          echo "==== data/raw ====" >> artifacts/debug_tree.txt
-          ls -lah data/raw >> artifacts/debug_tree.txt || true
 
       - name: Upload results
         if: always()
