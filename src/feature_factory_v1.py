@@ -5,10 +5,10 @@ import numpy as np
 RAW = Path("data/raw")
 ART = Path("artifacts")
 
-def _read_csv(name: str) -> pd.DataFrame | None:
+def _read_csv(name: str) -> pd.DataFrame:
     p = RAW / name
     if not p.exists():
-        return None
+        raise FileNotFoundError(f"Missing {p}")
     return pd.read_csv(p)
 
 def _pick(df: pd.DataFrame, options):
@@ -23,116 +23,60 @@ def _pick(df: pd.DataFrame, options):
                 return c
     return None
 
-def _norm_team(s: str) -> str:
-    s = str(s).strip().lower()
-    s = s.replace(".", "").replace(",", "").replace("’", "'")
-    s = s.replace("los angeles", "la")
-    s = " ".join(s.split())
-    return s
-
-def _build_abbr_name_map(schedule: pd.DataFrame | None):
-    # Builds ABBR -> normalized team name key using schedule if present
-    abbr_to_namekey = {}
-    if schedule is None or len(schedule) == 0:
-        return abbr_to_namekey
-
-    h_name = _pick(schedule, ["home_team", "home_team_name", "home_name", "home"])
-    a_name = _pick(schedule, ["away_team", "away_team_name", "away_name", "away"])
-    h_abbr = _pick(schedule, ["home_team_abbreviation", "home_abbr", "home_team_abbr"])
-    a_abbr = _pick(schedule, ["away_team_abbreviation", "away_abbr", "away_team_abbr"])
-
-    pairs = []
-    if h_name and h_abbr:
-        pairs += list(zip(schedule[h_abbr].astype(str), schedule[h_name].astype(str)))
-    if a_name and a_abbr:
-        pairs += list(zip(schedule[a_abbr].astype(str), schedule[a_name].astype(str)))
-
-    for ab, nm in pairs:
-        ab = ab.strip().upper()
-        nk = _norm_team(nm)
-        if len(ab) == 3 and nk:
-            abbr_to_namekey[ab] = nk
-    return abbr_to_namekey
-
-def _team_rest_table(team_box: pd.DataFrame):
-    tb = team_box.copy()
-    tb_date = _pick(tb, ["game_date", "date", "start_date", "game_datetime"])
-    tb_team = _pick(tb, ["team", "team_abbreviation", "team_abbr", "team_id", "team_slug", "team_name"])
-    if tb_date is None or tb_team is None:
-        return None
-
-    tb = tb.rename(columns={tb_date: "game_date", tb_team: "team_raw"}).copy()
-    tb["game_date"] = pd.to_datetime(tb["game_date"], errors="coerce")
-    tb = tb.dropna(subset=["game_date"])
-    tb["team_raw"] = tb["team_raw"].astype(str)
-    tb = tb.sort_values(["team_raw", "game_date"])
-
-    tb["rest_days"] = tb.groupby("team_raw")["game_date"].diff().dt.days
-    tb["rest_days"] = tb["rest_days"].fillna(7).clip(lower=0, upper=14)
-    tb["b2b"] = (tb["rest_days"] <= 1).astype(int)
-
-    def games_last_7d(g):
-        g = g.sort_values("game_date").copy()
-        g = g.set_index("game_date")
-        cnt = g["b2b"].rolling("7D").count().fillna(0) - 1
-        g["games_last_7d"] = cnt.clip(lower=0).values
-        return g.reset_index()
-
-    tb = tb.groupby("team_raw", group_keys=False).apply(games_last_7d)
-    return tb[["game_date", "team_raw", "rest_days", "b2b", "games_last_7d"]].drop_duplicates(["game_date", "team_raw"])
-
 def build_features():
     ART.mkdir(parents=True, exist_ok=True)
 
     pb = _read_csv("nba_player_box.csv")
     tb = _read_csv("nba_team_box.csv")
-    sch = _read_csv("nba_schedule.csv")  # your bundle has this ✅
 
-    if pb is None or tb is None:
-        raise FileNotFoundError("Missing data/raw/nba_player_box.csv or data/raw/nba_team_box.csv")
-
-    abbr_to_namekey = _build_abbr_name_map(sch)
-
-    def to_namekey(x: str) -> str:
-        x = str(x).strip()
-        if len(x) == 3 and x.isupper() and x in abbr_to_namekey:
-            return abbr_to_namekey[x]
-        return _norm_team(x)
-
-    # --- standardize player box ---
-    player_c = _pick(pb, ["player", "player_name", "athlete", "athlete_display_name", "name"])
+    # ---------- Player box standardization ----------
+    player_c = _pick(pb, ["player", "player_name", "athlete_display_name", "name"])
     date_c   = _pick(pb, ["game_date", "date", "start_date", "game_datetime"])
-    team_c   = _pick(pb, ["team", "team_abbreviation", "team_abbr", "team_id", "team_slug", "team_name"])
-    opp_c    = _pick(pb, ["opponent", "opp", "opponent_abbreviation", "opp_abbr", "opponent_team"])
-    min_c    = _pick(pb, ["min", "minutes", "mp"])
-    pts_c    = _pick(pb, ["pts", "points"])
-    reb_c    = _pick(pb, ["reb", "rebounds", "trb", "rebs"])
-    ast_c    = _pick(pb, ["ast", "assists"])
+    teamid_c = _pick(pb, ["team_id"])
+    oppabbr_c= _pick(pb, ["opponent_team_abbreviation", "opponent_abbreviation", "opp_abbr"])
 
-    needed = {"player":player_c,"game_date":date_c,"team":team_c,"opp":opp_c,"min":min_c,"pts":pts_c,"reb":reb_c,"ast":ast_c}
-    missing = [k for k,v in needed.items() if v is None]
-    if missing:
-        raise ValueError(f"nba_player_box.csv missing columns: {missing}. Have: {list(pb.columns)[:80]}")
+    min_c    = _pick(pb, ["minutes", "min", "mp"])
+    pts_c    = _pick(pb, ["points", "pts"])
+    reb_c    = _pick(pb, ["rebounds", "reb", "trb"])
+    ast_c    = _pick(pb, ["assists", "ast"])
+
+    if any(x is None for x in [player_c, date_c, teamid_c, oppabbr_c, min_c, pts_c, reb_c, ast_c]):
+        raise ValueError(f"nba_player_box.csv missing required columns. Have: {list(pb.columns)[:80]}")
 
     pb = pb.rename(columns={
-        player_c:"player", date_c:"game_date", team_c:"team_raw", opp_c:"opp_raw",
+        player_c:"player", date_c:"game_date", teamid_c:"team_id", oppabbr_c:"opp_abbr",
         min_c:"min", pts_c:"pts", reb_c:"reb", ast_c:"ast"
     }).copy()
 
     pb["game_date"] = pd.to_datetime(pb["game_date"], errors="coerce")
     pb = pb.dropna(subset=["game_date"])
+    pb["player"] = pb["player"].astype(str)
+    pb["opp_abbr"] = pb["opp_abbr"].astype(str)
 
     for c in ["min","pts","reb","ast"]:
         pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
 
-    pb["player"] = pb["player"].astype(str)
-    pb["team_raw"] = pb["team_raw"].astype(str)
-    pb["opp_raw"] = pb["opp_raw"].astype(str)
+    # map team_id -> team_abbr from team box
+    tb_teamid = _pick(tb, ["team_id"])
+    tb_abbr   = _pick(tb, ["team_abbreviation", "team_abbr"])
+    tb_date   = _pick(tb, ["game_date", "date", "start_date", "game_datetime"])
+    tb_gid    = _pick(tb, ["game_id"])
 
-    pb["team_key"] = pb["team_raw"].map(to_namekey)
-    pb["opp_key"] = pb["opp_raw"].map(to_namekey)
+    if any(x is None for x in [tb_teamid, tb_abbr, tb_date, tb_gid]):
+        raise ValueError(f"nba_team_box.csv missing team_id/abbr/date/game_id. Have: {list(tb.columns)[:80]}")
 
-    # --- rolling player features (no leakage) ---
+    id_to_abbr = (
+        tb[[tb_teamid, tb_abbr]]
+        .dropna()
+        .astype({tb_teamid: "int64"}, errors="ignore")
+        .drop_duplicates()
+        .set_index(tb_teamid)[tb_abbr]
+        .to_dict()
+    )
+
+    pb["team_abbr"] = pb["team_id"].map(id_to_abbr).fillna("").astype(str)
+
+    # ---------- Rolling player features (no leakage) ----------
     pb = pb.sort_values(["player","game_date"])
     g = pb.groupby("player", group_keys=False)
 
@@ -144,63 +88,111 @@ def build_features():
     pb["gp_last14"] = g["game_date"].shift(1).rolling(14, min_periods=1).count()
     pb = pb.fillna(0.0)
 
-    # --- team metrics from team_box joined via team_key/opp_key ---
-    tb_date = _pick(tb, ["game_date", "date", "start_date", "game_datetime"])
-    tb_team = _pick(tb, ["team", "team_abbreviation", "team_abbr", "team_id", "team_slug", "team_name"])
-    ortg    = _pick(tb, ["ortg", "off_rating", "offensive_rating"])
-    drtg    = _pick(tb, ["drtg", "def_rating", "defensive_rating"])
-    pace    = _pick(tb, ["pace"])
+    # ---------- Build team advanced metrics from team box ----------
+    t = tb.rename(columns={tb_date:"game_date", tb_gid:"game_id", tb_abbr:"team_abbr"}).copy()
+    t["game_date"] = pd.to_datetime(t["game_date"], errors="coerce")
+    t = t.dropna(subset=["game_date"])
+    t["team_abbr"] = t["team_abbr"].astype(str)
 
-    pb["team_ortg"] = 0.0
-    pb["team_drtg"] = 0.0
-    pb["team_pace"] = 0.0
-    pb["opp_ortg"]  = 0.0
-    pb["opp_drtg"]  = 0.0
-    pb["opp_pace"]  = 0.0
+    # required boxscore cols for possessions estimate
+    fga = _pick(t, ["field_goals_attempted", "fga"])
+    fta = _pick(t, ["free_throws_attempted", "fta"])
+    tov = _pick(t, ["turnovers", "tov"])
+    orb = _pick(t, ["offensive_rebounds", "orb"])
+    pts = _pick(t, ["team_score", "points", "pts"])
 
-    if tb_date and tb_team:
-        t = tb.rename(columns={tb_date:"game_date", tb_team:"team_raw"}).copy()
-        t["game_date"] = pd.to_datetime(t["game_date"], errors="coerce")
-        t = t.dropna(subset=["game_date"])
-        t["team_raw"] = t["team_raw"].astype(str)
-        t["team_key"] = t["team_raw"].map(to_namekey)
+    # safe numeric
+    for col in [fga, fta, tov, orb, pts]:
+        if col is None:
+            # if any missing, we just can’t compute advanced metrics; keep zeros
+            t["poss"] = 0.0
+            t["ortg_raw"] = 0.0
+            t["pace_raw"] = 0.0
+            break
+    else:
+        for col in [fga, fta, tov, orb, pts]:
+            t[col] = pd.to_numeric(t[col], errors="coerce").fillna(0.0)
 
-        ren = {}
-        if ortg: ren[ortg] = "ortg"
-        if drtg: ren[drtg] = "drtg"
-        if pace: ren[pace] = "pace"
+        # possessions approximation
+        t["poss"] = (t[fga] + 0.44 * t[fta] - t[orb] + t[tov]).clip(lower=0.0)
+        t["pace_raw"] = t["poss"]  # per-game estimate (good enough for now)
+        t["ortg_raw"] = np.where(t["poss"] > 0, (t[pts] / t["poss"]) * 100.0, 0.0)
 
-        if ren:
-            t = t.rename(columns=ren)
-            t = t[["game_date","team_key"] + list(ren.values())].drop_duplicates(["game_date","team_key"])
+    # opponent join (same game_id, other team row)
+    t2 = t[["game_id","team_abbr","poss","ortg_raw","pace_raw"]].copy()
+    t2 = t2.rename(columns={
+        "team_abbr":"opp_abbr",
+        "poss":"opp_poss",
+        "ortg_raw":"opp_ortg_raw",
+        "pace_raw":"opp_pace_raw"
+    })
 
-            tm = t.rename(columns={"ortg":"team_ortg","drtg":"team_drtg","pace":"team_pace"})
-            pb = pb.merge(tm, on=["game_date","team_key"], how="left")
+    # join on game_id, exclude same team
+    m = t.merge(t2, on="game_id", how="left")
+    m = m[m["team_abbr"] != m["opp_abbr"]].copy()
 
-            om = t.rename(columns={"team_key":"opp_key","ortg":"opp_ortg","drtg":"opp_drtg","pace":"opp_pace"})
-            pb = pb.merge(om, on=["game_date","opp_key"], how="left")
+    # defensive rating = opponent ORTG (same game possessions scale)
+    m["drtg_raw"] = m["opp_ortg_raw"]
 
-    for c in ["team_ortg","team_drtg","team_pace","opp_ortg","opp_drtg","opp_pace"]:
-        pb[c] = pd.to_numeric(pb.get(c, 0.0), errors="coerce").fillna(0.0)
+    # keep one opponent row per team-game
+    m = m.sort_values(["game_id","team_abbr"]).drop_duplicates(["game_id","team_abbr"])
 
-    # --- REST / B2B ---
-    rest_tbl = _team_rest_table(tb)
-    pb["rest_days"] = 0.0
-    pb["b2b"] = 0
-    pb["games_last_7d"] = 0.0
-    if rest_tbl is not None and len(rest_tbl) > 0:
-        rest_tbl = rest_tbl.copy()
-        rest_tbl["game_date"] = pd.to_datetime(rest_tbl["game_date"], errors="coerce")
-        rest_tbl["team_raw"] = rest_tbl["team_raw"].astype(str)
-        pb = pb.merge(rest_tbl, on=["game_date","team_raw"], how="left")
+    # ---------- Rolling pregame team context (no leakage) ----------
+    m = m.sort_values(["team_abbr","game_date"])
+    tg = m.groupby("team_abbr", group_keys=False)
 
-    for col, default in [("rest_days", 0.0), ("b2b", 0), ("games_last_7d", 0.0)]:
-        if col not in pb.columns:
-            pb[col] = default
-        pb[col] = pd.to_numeric(pb[col], errors="coerce").fillna(default)
-        if col == "b2b":
-            pb[col] = pb[col].astype(int)
+    m["team_ortg"] = tg["ortg_raw"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
+    m["team_drtg"] = tg["drtg_raw"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
+    m["team_pace"] = tg["pace_raw"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
 
+    # build opponent rolling tables by re-keying
+    opp_roll = m[["game_date","team_abbr","team_ortg","team_drtg","team_pace"]].copy()
+    opp_roll = opp_roll.rename(columns={
+        "team_abbr":"opp_abbr",
+        "team_ortg":"opp_ortg",
+        "team_drtg":"opp_drtg",
+        "team_pace":"opp_pace",
+    })
+
+    # ---------- Rest / B2B from team schedule (by team_abbr) ----------
+    rest = m[["game_date","team_abbr"]].drop_duplicates().sort_values(["team_abbr","game_date"]).copy()
+    rest["rest_days"] = rest.groupby("team_abbr")["game_date"].diff().dt.days
+    rest["rest_days"] = rest["rest_days"].fillna(7).clip(lower=0, upper=14)
+    rest["b2b"] = (rest["rest_days"] <= 1).astype(int)
+
+    def games_last_7d(g):
+        g = g.sort_values("game_date").copy()
+        g = g.set_index("game_date")
+        cnt = g["b2b"].rolling("7D").count().fillna(0) - 1
+        g["games_last_7d"] = cnt.clip(lower=0).values
+        return g.reset_index()
+
+    rest = rest.groupby("team_abbr", group_keys=False).apply(games_last_7d)
+
+    # ---------- Merge team context into player rows ----------
+    pb = pb.merge(
+        m[["game_date","team_abbr","team_ortg","team_drtg","team_pace"]],
+        on=["game_date","team_abbr"], how="left"
+    )
+    pb = pb.merge(
+        opp_roll,
+        on=["game_date","opp_abbr"], how="left"
+    )
+    pb = pb.merge(
+        rest[["game_date","team_abbr","rest_days","b2b","games_last_7d"]],
+        on=["game_date","team_abbr"], how="left"
+    )
+
+    # fill defaults
+    for c in ["team_ortg","team_drtg","team_pace","opp_ortg","opp_drtg","opp_pace","rest_days","games_last_7d"]:
+        if c not in pb.columns:
+            pb[c] = 0.0
+        pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
+    if "b2b" not in pb.columns:
+        pb["b2b"] = 0
+    pb["b2b"] = pd.to_numeric(pb["b2b"], errors="coerce").fillna(0).astype(int)
+
+    # output
     engineered = [
         "gp_last14",
         "team_ortg","team_drtg","team_pace",
@@ -208,9 +200,8 @@ def build_features():
         "rest_days","b2b","games_last_7d",
     ] + [c for c in pb.columns if c.endswith(("_r5","_r10","_sd10"))]
 
-    keep_cols = ["player","game_date","team_raw","opp_raw","min","pts","reb","ast"] + engineered
+    keep_cols = ["player","game_date","team_abbr","opp_abbr","min","pts","reb","ast"] + engineered
     out_df = pb[keep_cols].copy()
-
     for c in engineered + ["min","pts","reb","ast"]:
         out_df[c] = pd.to_numeric(out_df[c], errors="coerce").fillna(0.0)
 
