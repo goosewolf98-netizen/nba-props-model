@@ -1,8 +1,11 @@
 import json
 import math
-import re
 import argparse
+import re
+import subprocess
+import sys
 from pathlib import Path
+from urllib.request import urlopen, Request
 
 import numpy as np
 import pandas as pd
@@ -34,7 +37,6 @@ def find_last_row(df: pd.DataFrame, player_query: str) -> pd.Series:
     raise ValueError(f"Player not found: '{player_query}'. Examples: {sample}")
 
 def load_rmse_v2(stat: str) -> float:
-    # Prefer walk-forward v2 rmse
     p = ART_DIR / "walkforward_metrics_v2.json"
     if p.exists():
         j = json.loads(p.read_text())
@@ -42,7 +44,6 @@ def load_rmse_v2(stat: str) -> float:
             return float(j[stat]["overall"]["rmse"])
         except Exception:
             pass
-    # Fallback: holdout v2 rmse
     p = ART_DIR / "backtest_metrics_v2.json"
     if p.exists():
         j = json.loads(p.read_text())
@@ -58,68 +59,111 @@ def tier(p: float) -> str:
     if p >= 0.55: return "C"
     return "D"
 
-def parse_line_and_extras(line_str: str):
-    """
-    Supports:
-      "22.5"
-      "22.5@-120 platform=novig"
-      "29.5 @ +105 platform=prophetx"
-      "6.5 platform=prizepicks"
-    """
-    s = line_str.strip().lower()
+# ---------------- Injury overlay ----------------
 
-    # platform=...
-    platform = "generic"
-    m = re.search(r"platform\s*=\s*([a-z]+)", s)
-    if m:
-        platform = m.group(1).strip()
+def http_get_text(url: str, timeout=20) -> str:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="ignore")
 
-    # odds: find something that looks like -120 or +105 after @ or "odds="
-    odds = None
-    m = re.search(r"(?:@|odds\s*=)\s*([+-]?\d{2,5})", s)
-    if m:
+def http_get_bytes(url: str, timeout=30) -> bytes:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+def find_latest_injury_pdf():
+    season_page = "https://official.nba.com/nba-injury-report-2025-26-season/"
+    try:
+        html = http_get_text(season_page)
+        urls = re.findall(r"https?://[^\"'\s]+Injury-Report_\d{4}-\d{2}-\d{2}_[^\"'\s]+\.pdf", html)
+        if not urls:
+            rels = re.findall(r"/referee/injury/Injury-Report_\d{4}-\d{2}-\d{2}_[^\"'\s]+\.pdf", html)
+            urls = ["https://ak-static.cms.nba.com" + r for r in rels]
+
+        def key(u):
+            m = re.search(r"Injury-Report_(\d{4}-\d{2}-\d{2})_(\d{2})_(\d{2})(AM|PM)\.pdf", u)
+            if not m:
+                return ("0000-00-00", 0, 0)
+            d, hh, mm, ap = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+            h24 = hh % 12 + (12 if ap == "PM" else 0)
+            return (d, h24, mm)
+
+        urls = sorted(set(urls), key=key)
+        return urls[-1] if urls else None
+    except Exception:
+        return None
+
+def ensure_pypdf():
+    try:
+        import pypdf  # noqa
+        return True, None
+    except Exception:
         try:
-            odds = int(m.group(1))
-        except Exception:
-            odds = None
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pypdf"])
+            import pypdf  # noqa
+            return True, None
+        except Exception as e:
+            return False, str(e)
 
-    # line: first number like 22.5
-    m = re.search(r"(-?\d+(?:\.\d+)?)", s)
-    if not m:
-        raise ValueError(f"Could not parse line from: {line_str}")
-    line = float(m.group(1))
+def parse_injury_status_from_text(text: str, player_full: str):
+    player_full = str(player_full).strip()
+    parts = player_full.split()
+    first = parts[0] if parts else ""
+    last = parts[-1] if parts else ""
+    patterns = [
+        f"{last}, {first}",
+        player_full,
+        last
+    ]
+    status_words = ["out", "questionable", "probable", "available", "doubtful"]
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-    return line, platform, odds
+    for i, ln in enumerate(lines):
+        low = ln.lower()
+        if any(p.lower() in low for p in patterns):
+            window = " | ".join(lines[i:i+3]).lower()
+            for sw in status_words:
+                if re.search(rf"\b{sw}\b", window):
+                    return sw.upper()
+    return None
 
-def implied_prob_from_american(odds: int) -> float:
-    if odds == 0:
-        return 0.0
-    if odds < 0:
-        a = abs(odds)
-        return a / (a + 100.0)
-    return 100.0 / (odds + 100.0)
+def injury_overlay(player_name: str):
+    out = {"status": None, "pdf_used": None, "note": None}
+    pdf_url = find_latest_injury_pdf()
+    if not pdf_url:
+        out["note"] = "Could not find latest official NBA injury PDF."
+        return out
 
-def profit_per_1_from_american(odds: int) -> float:
-    # profit on $1 stake
-    if odds < 0:
-        a = abs(odds)
-        return 100.0 / a
-    return odds / 100.0
+    out["pdf_used"] = pdf_url
+    ok, err = ensure_pypdf()
+    if not ok:
+        out["note"] = f"Could not install/read pypdf: {err}"
+        return out
 
-def ev_per_1(p_win: float, odds: int) -> float:
-    prof = profit_per_1_from_american(odds)
-    return p_win * prof - (1.0 - p_win) * 1.0
+    try:
+        from pypdf import PdfReader
+        import io
+        pdf_bytes = http_get_bytes(pdf_url)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        text = "\n".join([(p.extract_text() or "") for p in reader.pages])
+        out["status"] = parse_injury_status_from_text(text, player_name)
+        if out["status"] is None:
+            out["note"] = "Player not found on latest injury report PDF."
+        return out
+    except Exception as e:
+        out["note"] = f"PDF parse failed safely: {e}"
+        return out
+
+# ---------------- Main ----------------
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--player", required=True)
     parser.add_argument("--stat", required=True, choices=["pts", "reb", "ast"])
-    parser.add_argument("--line", required=True)  # accept string so we can parse extras
+    parser.add_argument("--line", required=True, type=float)
     args = parser.parse_args()
 
     try:
-        line, platform, odds = parse_line_and_extras(args.line)
-
         feat_path = ART_DIR / "features_v1.parquet"
         if not feat_path.exists():
             raise FileNotFoundError("Missing artifacts/features_v1.parquet. Run Feature Factory first.")
@@ -133,9 +177,8 @@ def main():
         cols_path = ART_DIR / "feature_cols_v2.json"
         min_model_path = ART_DIR / "xgb_min.joblib"
         rate_model_path = ART_DIR / f"xgb_{args.stat}_rate.joblib"
-
         if not (cols_path.exists() and min_model_path.exists() and rate_model_path.exists()):
-            raise FileNotFoundError("Missing v2 artifacts (feature_cols_v2.json / xgb_min.joblib / xgb_*_rate.joblib). Run training step.")
+            raise FileNotFoundError("Missing v2 artifacts. Run training step.")
 
         feature_cols = json.loads(cols_path.read_text())
         min_model = load(min_model_path)
@@ -149,50 +192,23 @@ def main():
         proj = min_pred * rate_pred
 
         rmse = load_rmse_v2(args.stat)
-        z = (line - proj) / rmse if rmse > 1e-9 else 0.0
+        z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
         p_over = 1.0 - normal_cdf(z)
         p_under = 1.0 - p_over
 
-        best_side = "PASS"
         best_p = max(p_over, p_under)
+        best_side = "PASS"
         if best_p >= 0.55:
             best_side = "OVER" if p_over >= p_under else "UNDER"
 
-        # Platform formatting
-        odds_mode = platform in {"novig", "prophetx", "fliff"}
-        pickem_mode = platform in {"underdog", "betr", "prizepicks"}
+        inj = injury_overlay(str(last["player"]))
 
-        chosen_p = p_over if best_side == "OVER" else (p_under if best_side == "UNDER" else 0.0)
-
-        ev = None
-        edge = None
-        implied = None
-        if odds_mode and odds is not None and best_side in {"OVER", "UNDER"}:
-            implied = implied_prob_from_american(odds)
-            edge = float(chosen_p - implied)
-            ev = float(ev_per_1(chosen_p, odds))
-
-        slip_hint = None
-        if pickem_mode and best_side in {"OVER", "UNDER"}:
-            # simple guidance (correlation layer comes later with pbpstats)
-            t = tier(chosen_p)
-            if t == "A":
-                slip_hint = "Good anchor leg. Use in 2–3 leg slips; avoid pairing with same-game teammates until correlation layer is added."
-            elif t == "B":
-                slip_hint = "Solid 2-leg candidate. Prefer different games/teams."
-            elif t == "C":
-                slip_hint = "Only use if you need a filler; prefer 2-leg max."
-            else:
-                slip_hint = "Not strong enough for pick’em slips."
-
-        report = {
-            "model_version": "v2_minutes_x_rate + v2_context_features",
+        out = {
+            "model_version": "v2_minutes_x_rate + matchup_merge + injury_overlay",
             "player_query": args.player,
             "matched_player": str(last["player"]),
             "stat": args.stat,
-            "line": line,
-            "platform": platform,
-            "odds_american": odds,
+            "line": float(args.line),
             "projection": float(proj),
             "minutes_pred": float(min_pred),
             "rate_pred": float(rate_pred),
@@ -201,39 +217,22 @@ def main():
             "p_under": float(p_under),
             "recommendation": best_side,
             "confidence_tier": tier(best_p) if best_side != "PASS" else "PASS",
-            "chosen_prob": float(chosen_p) if best_side != "PASS" else None,
-            "implied_prob": implied,
-            "edge_prob": edge,
-            "ev_per_1": ev,
-            "pickem_slip_hint": slip_hint,
             "last_game_date_used": str(pd.to_datetime(last["game_date"]).date()),
-            "feature_notes": {
+            "context": {
                 "rest_days": float(last.get("rest_days", 0.0)),
                 "b2b": int(last.get("b2b", 0)),
                 "games_last_7d": float(last.get("games_last_7d", 0.0)),
                 "team_drtg": float(last.get("team_drtg", 0.0)),
                 "opp_drtg": float(last.get("opp_drtg", 0.0)),
+                "team_pace": float(last.get("team_pace", 0.0)),
+                "opp_pace": float(last.get("opp_pace", 0.0)),
             },
-            "next_sharp_layers": [
-                "official injury report ingest",
-                "lineup/on-off & teammate-out boosts (pbpstats / nba-on-court)",
-                "true EV backtest vs odds (Novig/ProphetX/Fliff)",
-                "correlation-aware slip builder (Underdog/PrizePicks/Betr)"
-            ]
+            "injury_overlay": inj
         }
 
         ART_DIR.mkdir(parents=True, exist_ok=True)
-        (ART_DIR / "player_pick.json").write_text(json.dumps(report, indent=2))
-        (ART_DIR / "player_query_report.json").write_text(json.dumps(report, indent=2))
-
-        # small human-readable summary
-        summary = {
-            "summary": f"{report['matched_player']} {report['stat'].upper()} {report['line']} -> {report['recommendation']} "
-                       f"(P={report['chosen_prob']:.3f} tier={report['confidence_tier']}) proj={report['projection']:.2f} "
-                       f"(min={report['minutes_pred']:.1f}, rate={report['rate_pred']:.3f})",
-        }
-        (ART_DIR / "player_query_summary.json").write_text(json.dumps(summary, indent=2))
-        print(json.dumps(report, indent=2))
+        (ART_DIR / "player_pick.json").write_text(json.dumps(out, indent=2))
+        print(json.dumps(out, indent=2))
 
     except Exception as e:
         write_error(f"Prediction failed: {e}")
