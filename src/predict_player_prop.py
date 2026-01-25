@@ -4,6 +4,7 @@ import argparse
 import re
 import subprocess
 import sys
+import importlib.util
 from pathlib import Path
 from urllib.request import urlopen, Request
 
@@ -94,16 +95,15 @@ def find_latest_injury_pdf():
         return None
 
 def ensure_pypdf():
-    try:
-        import pypdf  # noqa
+    if importlib.util.find_spec("pypdf") is not None:
         return True, None
-    except Exception:
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pypdf"])
-            import pypdf  # noqa
-            return True, None
-        except Exception as e:
-            return False, str(e)
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pypdf"])
+    except Exception as e:
+        return False, str(e)
+    if importlib.util.find_spec("pypdf") is None:
+        return False, "pypdf installation failed"
+    return True, None
 
 def parse_injury_status_from_text(text: str, player_full: str):
     player_full = str(player_full).strip()
@@ -154,6 +154,97 @@ def injury_overlay(player_name: str):
         out["note"] = f"PDF parse failed safely: {e}"
         return out
 
+# ---------------- Availability context ----------------
+
+def load_injury_status(player_name: str):
+    injuries_path = ART_DIR / "injuries_latest.csv"
+    empty = {"status": None, "report_datetime": None, "team_abbr": None, "reason": None}
+    if not injuries_path.exists():
+        return empty
+    try:
+        injuries = pd.read_csv(injuries_path)
+    except Exception:
+        return empty
+    for col in ["player", "status", "team_abbr", "reason", "report_datetime"]:
+        if col not in injuries.columns:
+            injuries[col] = ""
+    injuries["player"] = injuries["player"].astype(str)
+    injuries["status"] = injuries["status"].astype(str).str.upper()
+    injuries["team_abbr"] = injuries["team_abbr"].astype(str)
+    injuries["reason"] = injuries["reason"].astype(str)
+    injuries["report_datetime"] = injuries["report_datetime"].astype(str)
+
+    pq = player_name.strip().lower()
+    match = injuries[injuries["player"].str.lower() == pq]
+    if match.empty:
+        match = injuries[injuries["player"].str.lower().str.contains(pq, na=False)]
+    if match.empty:
+        return empty
+    row = match.iloc[0]
+    return {
+        "status": row.get("status") or None,
+        "report_datetime": row.get("report_datetime") or None,
+        "team_abbr": row.get("team_abbr") or None,
+        "reason": row.get("reason") or None,
+    }
+
+# ---------------- Market context ----------------
+
+def load_market_context(player_name: str, stat: str):
+    market = {
+        "market_open_line": None,
+        "market_open_odds": None,
+        "market_early_move": None,
+        "market_close_line": None,
+    }
+    moves_path = Path("data/lines/props_line_movement.csv")
+    closing_path = Path("data/lines/sdi_props_closing.csv")
+    norm_player = " ".join(str(player_name).strip().lower().split())
+    stat_norm = stat.strip().lower()
+
+    if moves_path.exists():
+        try:
+            moves = pd.read_csv(moves_path)
+        except Exception:
+            moves = pd.DataFrame()
+        if not moves.empty:
+            for col in ["game_date", "player", "stat", "open_line", "open_over_odds", "open_under_odds", "open_ts"]:
+                if col not in moves.columns:
+                    moves[col] = pd.NA
+            moves["player_norm"] = moves["player"].astype(str).str.lower().str.split().str.join(" ")
+            moves["stat_norm"] = moves["stat"].astype(str).str.lower()
+            subset = moves[(moves["player_norm"] == norm_player) & (moves["stat_norm"] == stat_norm)]
+            if not subset.empty:
+                subset = subset.sort_values("open_ts" if "open_ts" in subset.columns else "game_date")
+                row = subset.iloc[0]
+                market["market_open_line"] = float(row.get("open_line")) if pd.notna(row.get("open_line")) else None
+                market["market_open_odds"] = {
+                    "over": row.get("open_over_odds"),
+                    "under": row.get("open_under_odds"),
+                }
+                if len(subset) > 1:
+                    second = subset.iloc[1]
+                    if pd.notna(second.get("open_line")) and pd.notna(row.get("open_line")):
+                        market["market_early_move"] = float(second.get("open_line") - row.get("open_line"))
+
+    if closing_path.exists():
+        try:
+            closing = pd.read_csv(closing_path)
+        except Exception:
+            closing = pd.DataFrame()
+        if not closing.empty:
+            for col in ["player", "stat", "line"]:
+                if col not in closing.columns:
+                    closing[col] = pd.NA
+            closing["player_norm"] = closing["player"].astype(str).str.lower().str.split().str.join(" ")
+            closing["stat_norm"] = closing["stat"].astype(str).str.lower()
+            subset = closing[(closing["player_norm"] == norm_player) & (closing["stat_norm"] == stat_norm)]
+            if not subset.empty:
+                row = subset.iloc[-1]
+                market["market_close_line"] = float(row.get("line")) if pd.notna(row.get("line")) else None
+
+    return market
+
 # ---------------- Main ----------------
 
 def main():
@@ -202,9 +293,17 @@ def main():
             best_side = "OVER" if p_over >= p_under else "UNDER"
 
         inj = injury_overlay(str(last["player"]))
+        availability_injury = load_injury_status(str(last["player"]))
+        market_ctx = load_market_context(str(last["player"]), args.stat)
+        edge_open = None
+        edge_close = None
+        if market_ctx.get("market_open_line") is not None:
+            edge_open = float(proj - market_ctx["market_open_line"])
+        if market_ctx.get("market_close_line") is not None:
+            edge_close = float(proj - market_ctx["market_close_line"])
 
         out = {
-            "model_version": "v2_minutes_x_rate + matchup_merge + injury_overlay",
+            "model_version": "v2_minutes_x_rate + matchup_merge + availability_context + injury_overlay",
             "player_query": args.player,
             "matched_player": str(last["player"]),
             "stat": args.stat,
@@ -226,6 +325,30 @@ def main():
                 "opp_drtg": float(last.get("opp_drtg", 0.0)),
                 "team_pace": float(last.get("team_pace", 0.0)),
                 "opp_pace": float(last.get("opp_pace", 0.0)),
+            },
+            "availability_context": {
+                "team_out_count": float(last.get("team_out_count", 0.0)),
+                "team_q_count": float(last.get("team_q_count", 0.0)),
+                "opp_out_count": float(last.get("opp_out_count", 0.0)),
+                "opp_q_count": float(last.get("opp_q_count", 0.0)),
+                "top_teammate_out_flag": float(last.get("top_teammate_out_flag", 0.0)),
+                "out_teammates_min_proxy": float(last.get("out_teammates_min_proxy", 0.0)),
+                "injury_report_status": availability_injury,
+            },
+            "lineup_context": {
+                "player_on_off_net": float(last.get("player_on_off_net", 0.0)),
+                "player_on_off_pace": float(last.get("player_on_off_pace", 0.0)),
+                "opp_def_net_recent": float(last.get("opp_def_net_recent", 0.0)),
+                "synergy_delta_proxy": float(last.get("synergy_delta_proxy", 0.0)),
+                "cache_timestamp_used": str(last.get("lineup_cache_timestamp", "")),
+            },
+            "market_context": {
+                "market_open_line": market_ctx.get("market_open_line"),
+                "market_open_odds": market_ctx.get("market_open_odds"),
+                "market_early_move": market_ctx.get("market_early_move"),
+                "market_close_line": market_ctx.get("market_close_line"),
+                "edge_vs_open": edge_open,
+                "edge_vs_close": edge_close,
             },
             "injury_overlay": inj
         }
