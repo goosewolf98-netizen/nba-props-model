@@ -1,10 +1,17 @@
 from pathlib import Path
+import subprocess
+import sys
 import json
+import os
 import pandas as pd
 import numpy as np
 from joblib import dump
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from xgboost import XGBRegressor
+
+from backtest_thresholds import run_backtest
+from backtest_roi import run_backtest as run_roi_backtest
+from calibration_report import run_calibration
 
 ART_DIR = Path("artifacts")
 
@@ -52,11 +59,17 @@ def _make_rate_targets(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _get_feature_cols(df: pd.DataFrame) -> list[str]:
-    drop = {"player", "team", "opp", "game_date", "pts", "reb", "ast", "min",
-            "pts_rate", "reb_rate", "ast_rate"}
+    drop = {
+        "player", "team", "opp", "team_abbr", "opp_abbr",
+        "game_date", "pts", "reb", "ast", "min",
+        "pts_rate", "reb_rate", "ast_rate",
+    }
     cols = []
+    use_market = os.getenv("USE_MARKET_FEATURES", "0") == "1"
     for c in df.columns:
         if c in drop:
+            continue
+        if not use_market and (c.startswith("market_open_") or c.startswith("line_move_early_") or c.startswith("market_book_count_")):
             continue
         if pd.api.types.is_numeric_dtype(df[c]):
             cols.append(c)
@@ -86,6 +99,42 @@ def _predict_minutes_rate_projection(train_df: pd.DataFrame, test_df: pd.DataFra
 
     proj = min_pred * rate_pred
     return m_model, r_model, min_pred, rate_pred, proj
+
+
+def _availability_slices(preds_df: pd.DataFrame) -> dict:
+    slices = {}
+    if len(preds_df) == 0:
+        return slices
+    preds_df = preds_df.copy()
+    preds_df["y_true"] = pd.to_numeric(preds_df["y_true"], errors="coerce").fillna(0.0)
+    preds_df["y_pred"] = pd.to_numeric(preds_df["y_pred"], errors="coerce").fillna(0.0)
+
+    if "team_out_count" in preds_df.columns:
+        ge_mask = preds_df["team_out_count"] >= 2
+        lt_mask = preds_df["team_out_count"] < 2
+        if ge_mask.any():
+            slices["team_out_count_ge_2"] = _rmse(preds_df.loc[ge_mask, "y_true"], preds_df.loc[ge_mask, "y_pred"])
+        if lt_mask.any():
+            slices["team_out_count_lt_2"] = _rmse(preds_df.loc[lt_mask, "y_true"], preds_df.loc[lt_mask, "y_pred"])
+
+    if "top_teammate_out_flag" in preds_df.columns:
+        on_mask = preds_df["top_teammate_out_flag"] == 1
+        off_mask = preds_df["top_teammate_out_flag"] == 0
+        if on_mask.any():
+            slices["top_teammate_out_flag_1"] = _rmse(preds_df.loc[on_mask, "y_true"], preds_df.loc[on_mask, "y_pred"])
+        if off_mask.any():
+            slices["top_teammate_out_flag_0"] = _rmse(preds_df.loc[off_mask, "y_true"], preds_df.loc[off_mask, "y_pred"])
+
+    if "player_on_off_net" in preds_df.columns:
+        onoff = pd.to_numeric(preds_df["player_on_off_net"], errors="coerce").fillna(0.0).abs()
+        high_mask = onoff >= 2.0
+        low_mask = onoff < 2.0
+        if high_mask.any():
+            slices["player_on_off_net_ge_2"] = _rmse(preds_df.loc[high_mask, "y_true"], preds_df.loc[high_mask, "y_pred"])
+        if low_mask.any():
+            slices["player_on_off_net_lt_2"] = _rmse(preds_df.loc[low_mask, "y_true"], preds_df.loc[low_mask, "y_pred"])
+
+    return slices
 
 
 def walk_forward_v2(df: pd.DataFrame, stat: str, feature_cols: list[str]):
@@ -129,12 +178,28 @@ def walk_forward_v2(df: pd.DataFrame, stat: str, feature_cols: list[str]):
             "mae": fold_mae
         })
 
-        out = test_df[["game_date", "player", "team", "opp"]].copy()
+        extra_cols = [
+            "team_out_count", "team_q_count", "opp_out_count", "opp_q_count",
+            "top_teammate_out_flag", "out_teammates_min_proxy",
+            "player_on_off_net", "player_on_off_pace", "opp_def_net_recent",
+            "top_synergy_teammate_on_flag", "synergy_delta_proxy",
+        ]
+        base_cols = ["game_date", "player"]
+        if "team_abbr" in test_df.columns:
+            base_cols.append("team_abbr")
+        if "opp_abbr" in test_df.columns:
+            base_cols.append("opp_abbr")
+        cols = base_cols + [c for c in extra_cols if c in test_df.columns]
+        out = test_df[cols].copy()
         out["stat"] = stat
         out["y_true"] = y_true
         out["min_pred"] = min_pred
         out["rate_pred"] = rate_pred
         out["y_pred"] = proj
+        out["projection"] = proj
+        out["actual"] = y_true
+        out["p_over"] = 0.5
+        out["p_under"] = 0.5
         out["train_end"] = train_end
         preds_all.append(out)
 
@@ -199,6 +264,11 @@ if __name__ == "__main__":
     m_model = _fit_xgb(df[feature_cols], df["min"])
     dump(m_model, ART_DIR / "xgb_min.joblib")
 
+    importance_rows = []
+    if hasattr(m_model, "feature_importances_"):
+        for feature, importance in zip(feature_cols, m_model.feature_importances_):
+            importance_rows.append({"model": "min", "feature": feature, "importance": float(importance)})
+
     for stat in ["pts", "reb", "ast"]:
         rate_col = f"{stat}_rate"
         rate_df = df[df["min"] >= MIN_MINUTES_FOR_RATE_TRAIN]
@@ -206,6 +276,19 @@ if __name__ == "__main__":
             rate_df = df
         r_model = _fit_xgb(rate_df[feature_cols], rate_df[rate_col])
         dump(r_model, ART_DIR / f"xgb_{stat}_rate.joblib")
+        if hasattr(r_model, "feature_importances_"):
+            for feature, importance in zip(feature_cols, r_model.feature_importances_):
+                importance_rows.append({
+                    "model": f"{stat}_rate",
+                    "feature": feature,
+                    "importance": float(importance),
+                })
+
+    if importance_rows:
+        imp_df = pd.DataFrame(importance_rows)
+        imp_df = imp_df.sort_values(["model", "importance"], ascending=[True, False])
+        imp_df = imp_df.groupby("model", as_index=False).head(30)
+        imp_df.to_csv(ART_DIR / "feature_importance_v2.csv", index=False)
 
     # --- Walk-forward v2 ---
     wf_all = {"settings": {
@@ -217,14 +300,48 @@ if __name__ == "__main__":
     }}
 
     wf_preds_all = []
+    wf_slices = {}
     for stat in ["pts", "reb", "ast"]:
         wf_metrics, wf_preds = walk_forward_v2(df, stat, feature_cols)
+        if isinstance(wf_metrics, dict) and "overall" in wf_metrics and len(wf_preds) > 0:
+            wf_metrics["availability_slices"] = _availability_slices(wf_preds)
+            wf_slices[stat] = wf_metrics["availability_slices"]
         wf_all[stat] = wf_metrics
         if len(wf_preds) > 0:
             wf_preds_all.append(wf_preds)
 
     (ART_DIR / "walkforward_metrics_v2.json").write_text(json.dumps(wf_all, indent=2))
+    pred_path = ART_DIR / "walkforward_predictions_v2.csv"
+    required_cols = ["game_date", "player", "stat", "projection", "p_over", "p_under", "actual"]
     if wf_preds_all:
-        pd.concat(wf_preds_all, ignore_index=True).to_csv(ART_DIR / "walkforward_predictions_v2.csv", index=False)
+        preds_out = pd.concat(wf_preds_all, ignore_index=True)
+        for col in required_cols:
+            if col not in preds_out.columns:
+                preds_out[col] = 0.5 if col in ["p_over", "p_under"] else pd.NA
+        preds_out.to_csv(pred_path, index=False)
+    else:
+        empty = pd.DataFrame(columns=required_cols)
+        empty["p_over"] = 0.5
+        empty["p_under"] = 0.5
+        empty.to_csv(pred_path, index=False)
+    try:
+        subprocess.check_call([sys.executable, "src/sdi_props_lines.py"])
+        subprocess.check_call([sys.executable, "src/sdi_props_closing.py"])
+    except Exception as exc:
+        print(f"SportsDataIO lines skipped due to error: {exc}")
+    try:
+        run_roi_backtest(pred_path, Path("data/lines/sdi_props_closing.csv"))
+    except Exception as exc:
+        print(f"ROI backtest skipped due to error: {exc}")
+    try:
+        run_calibration(pred_path, Path("data/lines/sdi_props_closing.csv"))
+    except Exception as exc:
+        print(f"Calibration report skipped due to error: {exc}")
+    try:
+        run_backtest(pred_path, ART_DIR)
+    except Exception as exc:
+        print(f"Threshold backtest skipped due to error: {exc}")
+
+    (ART_DIR / "walkforward_slices_v2.json").write_text(json.dumps(wf_slices, indent=2))
 
     print("Saved v2 artifacts: backtest_metrics_v2.json, walkforward_metrics_v2.json, walkforward_predictions_v2.csv, xgb_min.joblib, xgb_*_rate.joblib, feature_cols_v2.json")
