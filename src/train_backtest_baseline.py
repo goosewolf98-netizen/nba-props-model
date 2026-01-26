@@ -189,13 +189,27 @@ def walk_forward_v2(df: pd.DataFrame, stat: str, feature_cols: list[str]):
             "player_on_off_net", "player_on_off_pace", "opp_def_net_recent",
             "top_synergy_teammate_on_flag", "synergy_delta_proxy",
         ]
-        base_cols = ["game_date", "player"]
+        cols = ["game_date", "player"]
         if "team_abbr" in test_df.columns:
-            base_cols.append("team_abbr")
+            cols.append("team_abbr")
+        elif "team" in test_df.columns:
+            cols.append("team")
+        else:
+            test_df["team_abbr"] = ""
+            cols.append("team_abbr")
         if "opp_abbr" in test_df.columns:
-            base_cols.append("opp_abbr")
-        cols = base_cols + [c for c in extra_cols if c in test_df.columns]
+            cols.append("opp_abbr")
+        elif "opp" in test_df.columns:
+            cols.append("opp")
+        else:
+            test_df["opp_abbr"] = ""
+            cols.append("opp_abbr")
+        cols = cols + [c for c in extra_cols if c in test_df.columns]
         out = test_df[cols].copy()
+        if "team_abbr" in out.columns:
+            out = out.rename(columns={"team_abbr": "team"})
+        if "opp_abbr" in out.columns:
+            out = out.rename(columns={"opp_abbr": "opp"})
         out["stat"] = stat
         out["y_true"] = y_true
         out["min_pred"] = min_pred
@@ -311,14 +325,24 @@ if __name__ == "__main__":
 
     wf_preds_all = []
     wf_slices = {}
-    for stat in ["pts", "reb", "ast"]:
-        wf_metrics, wf_preds = walk_forward_v2(df, stat, feature_cols)
-        if isinstance(wf_metrics, dict) and "overall" in wf_metrics and len(wf_preds) > 0:
-            wf_metrics["availability_slices"] = _availability_slices(wf_preds)
-            wf_slices[stat] = wf_metrics["availability_slices"]
-        wf_all[stat] = wf_metrics
-        if len(wf_preds) > 0:
-            wf_preds_all.append(wf_preds)
+    try:
+        for stat in ["pts", "reb", "ast"]:
+            wf_metrics, wf_preds = walk_forward_v2(df, stat, feature_cols)
+            if isinstance(wf_metrics, dict) and "overall" in wf_metrics and len(wf_preds) > 0:
+                wf_metrics["availability_slices"] = _availability_slices(wf_preds)
+                wf_slices[stat] = wf_metrics["availability_slices"]
+            wf_all[stat] = wf_metrics
+            if len(wf_preds) > 0:
+                wf_preds_all.append(wf_preds)
+    except Exception as exc:
+        (ART_DIR / "walkforward_predictions_v2.csv").write_text(
+            ",".join(["game_date", "player", "stat", "projection", "p_over", "p_under", "actual"]) + "\n"
+        )
+        (ART_DIR / "walkforward_metrics_v2.json").write_text(json.dumps({
+            "status": "failed",
+            "error": str(exc),
+        }, indent=2))
+        raise
 
     (ART_DIR / "walkforward_metrics_v2.json").write_text(json.dumps(wf_all, indent=2))
     pred_path = ART_DIR / "walkforward_predictions_v2.csv"

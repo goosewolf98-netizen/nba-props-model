@@ -331,11 +331,17 @@ def build_features():
     if "team_abbr" not in pb.columns and "team_abbreviation" in pb.columns:
         pb = pb.rename(columns={"team_abbreviation": "team_abbr"})
     rest = ensure_col(rest, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
-    rest = safe_cols(
-        rest,
-        ["game_date","team_abbr","rest_days","b2b","games_last_7d"],
-        fill_zero_cols=["rest_days", "b2b", "games_last_7d"],
-    )
+    if "team_abbr" not in rest.columns:
+        if "team_abbreviation" in rest.columns:
+            rest = rest.rename(columns={"team_abbreviation": "team_abbr"})
+        elif "team" in rest.columns:
+            rest = rest.rename(columns={"team": "team_abbr"})
+        elif "abbr" in rest.columns:
+            rest = rest.rename(columns={"abbr": "team_abbr"})
+    rest = rest.reindex(columns=["game_date","team_abbr","rest_days","b2b","games_last_7d"])
+    for c in ["rest_days", "b2b", "games_last_7d"]:
+        if c in rest.columns:
+            rest[c] = rest[c].fillna(0)
     print("REST COLS:", list(rest.columns))
     print("REST team_abbr present:", "team_abbr" in rest.columns)
     print("MERGE TYPES:", pb["game_date"].dtype, rest["game_date"].dtype)
