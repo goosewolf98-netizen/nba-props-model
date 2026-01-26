@@ -276,6 +276,11 @@ if __name__ == "__main__":
         for feature, importance in zip(feature_cols, m_model.feature_importances_):
             importance_rows.append({"model": "min", "feature": feature, "importance": float(importance)})
 
+    importance_rows = []
+    if hasattr(m_model, "feature_importances_"):
+        for feature, importance in zip(feature_cols, m_model.feature_importances_):
+            importance_rows.append({"model": "min", "feature": feature, "importance": float(importance)})
+
     for stat in ["pts", "reb", "ast"]:
         rate_col = f"{stat}_rate"
         rate_df = df[df["min"] >= MIN_MINUTES_FOR_RATE_TRAIN]
