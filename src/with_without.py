@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 
-from schema_normalize import ensure_col, normalize_dates, safe_cols
+from schema_normalize import norm_all, norm_minutes
 
 
 RAW_PLAYER = Path("data/raw/nba_player_box.csv")
@@ -18,9 +18,7 @@ def _load_player_box() -> pd.DataFrame:
         df = pd.read_csv(RAW_PLAYER)
     except Exception:
         return pd.DataFrame()
-    df = normalize_dates(df)
-    df = ensure_col(df, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
-    df = ensure_col(df, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
+    df = norm_all(df)
     return df
 
 
@@ -48,6 +46,7 @@ def main():
         return
 
     player_col = "player"
+    pb = norm_minutes(pb)
     min_col = "min" if "min" in pb.columns else ("minutes" if "minutes" in pb.columns else None)
     if min_col is None:
         pb["min"] = 0.0

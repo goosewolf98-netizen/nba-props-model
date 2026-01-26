@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-from schema_normalize import ensure_col, normalize_dates
+from schema_normalize import norm_all
 
 
 TEAM_BOX = Path("data/raw/nba_team_box.csv")
@@ -19,8 +19,7 @@ def _load_team_box() -> pd.DataFrame:
         df = pd.read_csv(TEAM_BOX)
     except Exception:
         return pd.DataFrame()
-    df = normalize_dates(df)
-    df = ensure_col(df, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
+    df = norm_all(df)
     return df
 
 
@@ -31,9 +30,7 @@ def _load_player_box() -> pd.DataFrame:
         df = pd.read_csv(PLAYER_BOX)
     except Exception:
         return pd.DataFrame()
-    df = normalize_dates(df)
-    df = ensure_col(df, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
-    df = ensure_col(df, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
+    df = norm_all(df)
     return df
 
 
@@ -84,7 +81,9 @@ def main():
     opp_roll = tb[["game_date", "team_abbr", "opp_def_rating_roll", "opp_pace_roll"]].copy()
     opp_roll = opp_roll.rename(columns={"team_abbr": "opp_abbr"})
 
-    pb = pb[["game_date", "opp_abbr"]].drop_duplicates()
+    pb = norm_all(pb)
+    pb = pb.reindex(columns=["game_date", "opp_abbr"])
+    pb = pb.dropna(subset=["game_date"]).drop_duplicates()
     merged = pb.merge(opp_roll, on=["game_date", "opp_abbr"], how="left")
     merged["opp_reb_rate_allowed"] = 0.0
     merged["opp_ast_rate_allowed"] = 0.0

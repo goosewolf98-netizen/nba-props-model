@@ -25,3 +25,44 @@ def safe_cols(df: pd.DataFrame, cols, fill_zero_cols=None) -> pd.DataFrame:
             if col in out.columns:
                 out[col] = out[col].fillna(0)
     return out
+
+
+def norm_game_date(df: pd.DataFrame):
+    if df is None or len(df) == 0:
+        return df
+    if "game_date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce").dt.date.astype(str)
+    elif "date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
+    return df
+
+
+def norm_minutes(df: pd.DataFrame):
+    if df is None or len(df) == 0:
+        return df
+    if "min" not in df.columns and "minutes" in df.columns:
+        df = df.rename(columns={"minutes": "min"})
+    return df
+
+
+def norm_team_cols(df: pd.DataFrame):
+    if df is None or len(df) == 0:
+        return df
+    if "team_abbr" not in df.columns:
+        for c in ["team_abbreviation", "team", "abbr", "TEAM_ABBR"]:
+            if c in df.columns:
+                df = df.rename(columns={c: "team_abbr"})
+                break
+    if "opp_abbr" not in df.columns:
+        for c in ["opponent_team_abbreviation", "opponent_abbr", "opp", "opponent"]:
+            if c in df.columns:
+                df = df.rename(columns={c: "opp_abbr"})
+                break
+    return df
+
+
+def norm_all(df: pd.DataFrame):
+    df = norm_game_date(df)
+    df = norm_minutes(df)
+    df = norm_team_cols(df)
+    return df
