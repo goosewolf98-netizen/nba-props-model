@@ -87,11 +87,16 @@ def _predict_minutes_rate_projection(train_df: pd.DataFrame, test_df: pd.DataFra
         # fallback: train on all rows if filtered too small
         train_rate = train_df
 
-    r_model = _fit_xgb(train_rate[feature_cols], train_rate[rate_col])
+    train_rate = train_rate.copy()
+    train_rate["min_pred_feature"] = m_model.predict(train_rate[feature_cols])
+    rate_features = feature_cols + ["min_pred_feature"]
+    r_model = _fit_xgb(train_rate[rate_features], train_rate[rate_col])
 
     # Predict
     min_pred = m_model.predict(test_df[feature_cols])
-    rate_pred = r_model.predict(test_df[feature_cols])
+    test_features = test_df[feature_cols].copy()
+    test_features["min_pred_feature"] = min_pred
+    rate_pred = r_model.predict(test_features[rate_features])
 
     # sanity clips
     min_pred = np.clip(min_pred, 0.0, 48.0)
@@ -263,6 +268,13 @@ if __name__ == "__main__":
     # Train serving models on ALL rows
     m_model = _fit_xgb(df[feature_cols], df["min"])
     dump(m_model, ART_DIR / "xgb_min.joblib")
+    df = df.copy()
+    df["min_pred_feature"] = m_model.predict(df[feature_cols])
+
+    importance_rows = []
+    if hasattr(m_model, "feature_importances_"):
+        for feature, importance in zip(feature_cols, m_model.feature_importances_):
+            importance_rows.append({"model": "min", "feature": feature, "importance": float(importance)})
 
     importance_rows = []
     if hasattr(m_model, "feature_importances_"):
@@ -274,7 +286,10 @@ if __name__ == "__main__":
         rate_df = df[df["min"] >= MIN_MINUTES_FOR_RATE_TRAIN]
         if len(rate_df) < 200:
             rate_df = df
-        r_model = _fit_xgb(rate_df[feature_cols], rate_df[rate_col])
+        rate_df = rate_df.copy()
+        rate_df["min_pred_feature"] = m_model.predict(rate_df[feature_cols])
+        rate_features = feature_cols + ["min_pred_feature"]
+        r_model = _fit_xgb(rate_df[rate_features], rate_df[rate_col])
         dump(r_model, ART_DIR / f"xgb_{stat}_rate.joblib")
         if hasattr(r_model, "feature_importances_"):
             for feature, importance in zip(feature_cols, r_model.feature_importances_):

@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import subprocess
 import pandas as pd
 import numpy as np
 
@@ -40,6 +41,13 @@ def build_features():
         ensure_lineup_cache()
     except Exception as exc:
         print(f"Lineup cache skipped: {exc}")
+    try:
+        subprocess.run(["python", "src/sdi_injuries.py"], check=False)
+        subprocess.run(["python", "src/build_availability_table.py"], check=False)
+        subprocess.run(["python", "src/with_without.py"], check=False)
+        subprocess.run(["python", "src/opponent_matchup.py"], check=False)
+    except Exception as exc:
+        print(f"Context builders skipped: {exc}")
 
     pb = _read_csv("nba_player_box.csv")
     pb = normalize_dates(pb)
@@ -314,6 +322,80 @@ def build_features():
 
     pb = add_availability_features(pb, ART / "injuries_latest.csv")
 
+    availability_path = Path("data/injuries/availability_by_game.csv")
+    if availability_path.exists():
+        try:
+            availability = pd.read_csv(availability_path)
+        except Exception:
+            availability = pd.DataFrame()
+    else:
+        availability = pd.DataFrame()
+
+    if not availability.empty:
+        for col in ["game_date", "team_abbr", "player", "is_out", "is_doubt", "is_q", "is_prob", "is_active"]:
+            if col not in availability.columns:
+                availability[col] = 0 if col.startswith("is_") else ""
+        availability["game_date"] = pd.to_datetime(availability["game_date"], errors="coerce").dt.date.astype(str)
+        availability["team_abbr"] = availability["team_abbr"].astype(str)
+        team_avail = availability.groupby(["game_date", "team_abbr"], as_index=False).agg(
+            team_out_count=("is_out", "sum"),
+            team_doubt_count=("is_doubt", "sum"),
+            team_q_count=("is_q", "sum"),
+            team_prob_count=("is_prob", "sum"),
+        )
+        opp_avail = team_avail.rename(columns={
+            "team_abbr": "opp_abbr",
+            "team_out_count": "opp_out_count",
+            "team_doubt_count": "opp_doubt_count",
+            "team_q_count": "opp_q_count",
+            "team_prob_count": "opp_prob_count",
+        })
+        pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+        pb = pb.merge(team_avail, left_on=["game_date_key", "team_abbr"], right_on=["game_date", "team_abbr"], how="left")
+        pb = pb.merge(opp_avail, left_on=["game_date_key", "opp_abbr"], right_on=["game_date", "opp_abbr"], how="left")
+        pb = pb.drop(columns=["game_date_key", "game_date_x", "game_date_y"], errors="ignore")
+    else:
+        pb["team_out_count"] = pb.get("team_out_count", 0.0)
+        pb["team_doubt_count"] = 0.0
+        pb["team_q_count"] = pb.get("team_q_count", 0.0)
+        pb["team_prob_count"] = 0.0
+        pb["opp_out_count"] = pb.get("opp_out_count", 0.0)
+        pb["opp_doubt_count"] = 0.0
+        pb["opp_q_count"] = pb.get("opp_q_count", 0.0)
+        pb["opp_prob_count"] = 0.0
+
+    with_without_path = ART / "with_without_features.parquet"
+    if with_without_path.exists():
+        try:
+            with_without = pd.read_parquet(with_without_path)
+        except Exception:
+            with_without = pd.DataFrame()
+        if not with_without.empty:
+            for col in ["game_date", "team_abbr", "player"]:
+                if col not in with_without.columns:
+                    with_without[col] = ""
+            pb = pb.merge(
+                with_without,
+                on=["game_date", "team_abbr", "player"],
+                how="left",
+            )
+
+    opponent_matchup_path = ART / "opponent_matchup_features.parquet"
+    if opponent_matchup_path.exists():
+        try:
+            opp_match = pd.read_parquet(opponent_matchup_path)
+        except Exception:
+            opp_match = pd.DataFrame()
+        if not opp_match.empty:
+            for col in ["game_date", "opp_abbr"]:
+                if col not in opp_match.columns:
+                    opp_match[col] = ""
+            pb = pb.merge(
+                opp_match,
+                on=["game_date", "opp_abbr"],
+                how="left",
+            )
+
     use_market_open = os.getenv("USE_MARKET_OPEN_FEATURES", "0") == "1"
     line_moves_path = Path("data/lines/props_line_movement.csv")
     for stat in ["pts", "reb", "ast"]:
@@ -524,10 +606,14 @@ def build_features():
         "opp_ortg","opp_drtg","opp_pace",
         "opp_ortg_roll10","opp_drtg_roll10","opp_pace_roll10",
         "rest_days","games_last_7d",
-        "team_out_count","team_q_count","opp_out_count","opp_q_count",
+        "team_out_count","team_doubt_count","team_q_count","team_prob_count",
+        "opp_out_count","opp_doubt_count","opp_q_count","opp_prob_count",
         "top_teammate_out_flag","out_teammates_min_proxy",
+        "starters_out_count","rotation_out_count",
+        "top_usage_teammates_out_count","top_ast_teammates_out_count","top_reb_teammates_out_count",
         "player_on_off_net","player_on_off_pace","player_minutes_on_recent",
         "opp_def_net_recent","top_synergy_teammate_on_flag","synergy_delta_proxy",
+        "opp_def_rating_roll","opp_pace_roll","opp_reb_rate_allowed","opp_ast_rate_allowed",
         "market_open_line_pts","market_open_implied_over_pts","market_open_implied_under_pts","market_book_count_pts","early_line_move_pts",
         "market_open_line_reb","market_open_implied_over_reb","market_open_implied_under_reb","market_book_count_reb","early_line_move_reb",
         "market_open_line_ast","market_open_implied_over_ast","market_open_implied_under_ast","market_book_count_ast","early_line_move_ast",
@@ -547,10 +633,14 @@ def build_features():
         "opp_ortg","opp_drtg","opp_pace",
         "opp_ortg_roll10","opp_drtg_roll10","opp_pace_roll10",
         "rest_days","b2b","games_last_7d",
-        "team_out_count","team_q_count","opp_out_count","opp_q_count",
+        "team_out_count","team_doubt_count","team_q_count","team_prob_count",
+        "opp_out_count","opp_doubt_count","opp_q_count","opp_prob_count",
         "top_teammate_out_flag","out_teammates_min_proxy",
+        "starters_out_count","rotation_out_count",
+        "top_usage_teammates_out_count","top_ast_teammates_out_count","top_reb_teammates_out_count",
         "player_on_off_net","player_on_off_pace","player_minutes_on_recent",
         "opp_def_net_recent","top_synergy_teammate_on_flag","synergy_delta_proxy",
+        "opp_def_rating_roll","opp_pace_roll","opp_reb_rate_allowed","opp_ast_rate_allowed",
         "market_open_line_pts","market_open_implied_over_pts","market_open_implied_under_pts","market_book_count_pts","early_line_move_pts",
         "market_open_line_reb","market_open_implied_over_reb","market_open_implied_under_reb","market_book_count_reb","early_line_move_reb",
         "market_open_line_ast","market_open_implied_over_ast","market_open_implied_under_ast","market_book_count_ast","early_line_move_ast",

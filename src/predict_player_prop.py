@@ -245,6 +245,31 @@ def load_market_context(player_name: str, stat: str):
 
     return market
 
+# ---------------- Teammate context ----------------
+
+def load_teammates_out(team_abbr: str, game_date: str, player_name: str):
+    avail_path = Path("data/injuries/availability_by_game.csv")
+    if not avail_path.exists():
+        return []
+    try:
+        avail = pd.read_csv(avail_path)
+    except Exception:
+        return []
+    for col in ["game_date", "team_abbr", "player", "is_out"]:
+        if col not in avail.columns:
+            avail[col] = "" if col != "is_out" else 0
+    avail["game_date"] = pd.to_datetime(avail["game_date"], errors="coerce").dt.date.astype(str)
+    avail["team_abbr"] = avail["team_abbr"].astype(str)
+    avail["player"] = avail["player"].astype(str)
+    avail["is_out"] = pd.to_numeric(avail["is_out"], errors="coerce").fillna(0).astype(int)
+    subset = avail[
+        (avail["team_abbr"] == str(team_abbr))
+        & (avail["game_date"] == str(game_date))
+        & (avail["is_out"] == 1)
+        & (avail["player"].str.lower() != str(player_name).strip().lower())
+    ]
+    return subset["player"].dropna().astype(str).head(3).tolist()
+
 # ---------------- Main ----------------
 
 def main():
@@ -279,7 +304,9 @@ def main():
         X = pd.DataFrame([row]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
         min_pred = float(np.clip(min_model.predict(X)[0], 0.0, 48.0))
-        rate_pred = float(np.clip(rate_model.predict(X)[0], 0.0, 10.0))
+        X_rate = X.copy()
+        X_rate["min_pred_feature"] = min_pred
+        rate_pred = float(np.clip(rate_model.predict(X_rate)[0], 0.0, 10.0))
         proj = min_pred * rate_pred
 
         rmse = load_rmse_v2(args.stat)
@@ -302,6 +329,16 @@ def main():
         if market_ctx.get("market_close_line") is not None:
             edge_close = float(proj - market_ctx["market_close_line"])
 
+        teammates_out = load_teammates_out(str(last.get("team_abbr", "")), str(pd.to_datetime(last["game_date"]).date()), str(last["player"]))
+        recent_minutes_roll = float(last.get("min_r5", last.get("min_r10", 0.0)))
+        opp_def_rating_roll = float(last.get("opp_def_rating_roll", last.get("opp_drtg_roll10", 0.0)))
+        pace_roll = float(last.get("team_pace_roll10", last.get("team_pace", 0.0)))
+
+        if availability_injury.get("status", "").upper() == "OUT" or inj.get("status") == "OUT":
+            best_side = "NO_BET"
+
+        edge = float(proj - float(args.line))
+
         out = {
             "model_version": "v2_minutes_x_rate + matchup_merge + availability_context + injury_overlay",
             "player_query": args.player,
@@ -309,7 +346,9 @@ def main():
             "stat": args.stat,
             "line": float(args.line),
             "projection": float(proj),
+            "edge": edge,
             "minutes_pred": float(min_pred),
+            "minutes_projection": float(min_pred),
             "rate_pred": float(rate_pred),
             "rmse_used": float(rmse),
             "p_over": float(p_over),
@@ -317,6 +356,12 @@ def main():
             "recommendation": best_side,
             "confidence_tier": tier(best_p) if best_side != "PASS" else "PASS",
             "last_game_date_used": str(pd.to_datetime(last["game_date"]).date()),
+            "key_context": {
+                "teammates_out": teammates_out,
+                "opp_def_rating_roll": opp_def_rating_roll,
+                "pace_roll": pace_roll,
+                "recent_minutes_roll": recent_minutes_roll,
+            },
             "context": {
                 "rest_days": float(last.get("rest_days", 0.0)),
                 "b2b": int(last.get("b2b", 0)),
