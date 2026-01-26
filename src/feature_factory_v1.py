@@ -12,13 +12,22 @@ from schema_normalize import ensure_col, normalize_dates, safe_cols
 RAW = Path("data/raw")
 ART = Path("artifacts")
 
-def _norm_game_date(df: pd.DataFrame):
+def _norm_schema(df: pd.DataFrame):
     if df is None or len(df) == 0:
         return df
     if "game_date" in df.columns:
         df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce").dt.date.astype(str)
-    if "date" in df.columns and "game_date" not in df.columns:
+    elif "date" in df.columns:
         df["game_date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
+    if "min" not in df.columns and "minutes" in df.columns:
+        df = df.rename(columns={"minutes": "min"})
+    if "opp_abbr" not in df.columns:
+        for c in ["opponent_team_abbreviation", "opponent_abbr", "opp", "opponent"]:
+            if c in df.columns:
+                df = df.rename(columns={c: "opp_abbr"})
+                break
+    if "opp_abbr" not in df.columns:
+        df["opp_abbr"] = ""
     return df
 
 def _read_csv(name: str) -> pd.DataFrame:
@@ -59,7 +68,7 @@ def build_features():
         print(f"Context builders skipped: {exc}")
 
     pb = _read_csv("nba_player_box.csv")
-    pb = _norm_game_date(pb)
+    pb = _norm_schema(pb)
     pb = normalize_dates(pb)
     pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
     pb = ensure_col(pb, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
@@ -70,7 +79,7 @@ def build_features():
     print("PLAYER cols:", list(pb.columns))
 
     tb = _read_csv("nba_team_box.csv")
-    tb = _norm_game_date(tb)
+    tb = _norm_schema(tb)
     tb = normalize_dates(tb)
     tb = ensure_col(tb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
     tb = ensure_col(tb, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
@@ -101,7 +110,7 @@ def build_features():
             min_c:"min", pts_c:"pts", reb_c:"reb", ast_c:"ast"
         }).copy()
 
-    pb = _norm_game_date(pb)
+    pb = _norm_schema(pb)
     pb = normalize_dates(pb)
     pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
     pb = ensure_col(pb, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
@@ -166,7 +175,7 @@ def build_features():
         t = tb.rename(columns={tb_date:"game_date", tb_gid:"game_id", tb_abbr:"team_abbr"}).copy()
     else:
         t = pd.DataFrame(columns=["game_date", "game_id", "team_abbr"])
-    t = _norm_game_date(t)
+    t = _norm_schema(t)
     t = normalize_dates(t)
     t = ensure_col(t, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
     t = ensure_col(t, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
@@ -247,7 +256,7 @@ def build_features():
         ["game_date","team_abbr","team_ortg_roll10","team_drtg_roll10","team_pace_roll10"],
         fill_zero_cols=["team_ortg_roll10", "team_drtg_roll10", "team_pace_roll10"],
     ).copy()
-    opp_roll = _norm_game_date(opp_roll)
+    opp_roll = _norm_schema(opp_roll)
     opp_roll = opp_roll.rename(columns={
         "team_abbr":"opp_abbr",
         "team_ortg_roll10":"opp_ortg_roll10",
@@ -260,7 +269,7 @@ def build_features():
     opp_roll["opp_pace"] = opp_roll["opp_pace_roll10"]
 
     # ---------- Rest / B2B from team schedule (by team_abbr) ----------
-    rest = _norm_game_date(m)
+    rest = _norm_schema(m)
     rest = normalize_dates(rest)
     rest = ensure_col(rest, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
     rest = ensure_col(rest, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
@@ -293,9 +302,9 @@ def build_features():
         rest = pd.DataFrame(columns=["game_date","team_abbr","rest_days","b2b","games_last_7d"])
 
     # ---------- Merge team context into player rows ----------
-    pb = _norm_game_date(pb)
-    m = _norm_game_date(m)
-    print("DATE TYPES:", pb["game_date"].dtype, m["game_date"].dtype)
+    pb = _norm_schema(pb)
+    m = _norm_schema(m)
+    print("MERGE TYPES:", pb["game_date"].dtype, m["game_date"].dtype)
     pb = pb.merge(
         safe_cols(
             m,
@@ -312,8 +321,9 @@ def build_features():
         ),
         on=["game_date","team_abbr"], how="left"
     )
-    pb = _norm_game_date(pb)
-    opp_roll = _norm_game_date(opp_roll)
+    pb = _norm_schema(pb)
+    opp_roll = _norm_schema(opp_roll)
+    print("MERGE TYPES:", pb["game_date"].dtype, opp_roll["game_date"].dtype)
     pb = pb.merge(
         opp_roll,
         on=["game_date","opp_abbr"], how="left"
@@ -328,6 +338,7 @@ def build_features():
     )
     print("REST COLS:", list(rest.columns))
     print("REST team_abbr present:", "team_abbr" in rest.columns)
+    print("MERGE TYPES:", pb["game_date"].dtype, rest["game_date"].dtype)
     if "team_abbr" in pb.columns and "team_abbr" in rest.columns:
         pb = pb.merge(
             rest,
@@ -351,6 +362,7 @@ def build_features():
     else:
         availability = pd.DataFrame()
 
+    availability = _norm_schema(availability)
     if not availability.empty:
         for col in ["game_date", "team_abbr", "player", "is_out", "is_doubt", "is_q", "is_prob", "is_active"]:
             if col not in availability.columns:
@@ -391,6 +403,7 @@ def build_features():
         except Exception:
             with_without = pd.DataFrame()
         if not with_without.empty:
+            with_without = _norm_schema(with_without)
             for col in ["game_date", "team_abbr", "player"]:
                 if col not in with_without.columns:
                     with_without[col] = ""
@@ -407,6 +420,7 @@ def build_features():
         except Exception:
             opp_match = pd.DataFrame()
         if not opp_match.empty:
+            opp_match = _norm_schema(opp_match)
             for col in ["game_date", "opp_abbr"]:
                 if col not in opp_match.columns:
                     opp_match[col] = ""
