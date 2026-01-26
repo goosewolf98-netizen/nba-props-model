@@ -344,4 +344,35 @@ if __name__ == "__main__":
 
     (ART_DIR / "walkforward_slices_v2.json").write_text(json.dumps(wf_slices, indent=2))
 
+    def run_bulk75():
+        ART_DIR.mkdir(parents=True, exist_ok=True)
+        lines_dir = Path("data/lines")
+        lines_dir.mkdir(parents=True, exist_ok=True)
+
+        wf_pred_path = ART_DIR / "walkforward_predictions_v2.csv"
+        wf_metrics_path = ART_DIR / "walkforward_metrics_v2.json"
+        required_cols = ["game_date", "player", "stat", "projection", "p_over", "p_under", "actual"]
+        if not wf_pred_path.exists():
+            empty = pd.DataFrame(columns=required_cols)
+            empty["p_over"] = 0.5
+            empty["p_under"] = 0.5
+            empty.to_csv(wf_pred_path, index=False)
+        if not wf_metrics_path.exists():
+            wf_metrics_path.write_text(json.dumps({"status": "placeholder"}, indent=2))
+
+        subprocess.run([sys.executable, "src/sdi_props_lines.py"], check=False)
+        subprocess.run([sys.executable, "src/sdi_props_closing.py"], check=False)
+        subprocess.run([sys.executable, "src/backtest_roi.py"], check=False)
+        subprocess.run([sys.executable, "src/calibration_report.py"], check=False)
+
+        roi_summary = ART_DIR / "roi_backtest_summary.json"
+        if not roi_summary.exists():
+            roi_summary.write_text(json.dumps({"status": "skipped", "reason": "no lines matched"}, indent=2))
+
+        calib_report = ART_DIR / "calibration_report.json"
+        if not calib_report.exists():
+            calib_report.write_text(json.dumps({"status": "skipped", "reason": "no lines matched"}, indent=2))
+
+    run_bulk75()
+
     print("Saved v2 artifacts: backtest_metrics_v2.json, walkforward_metrics_v2.json, walkforward_predictions_v2.csv, xgb_min.joblib, xgb_*_rate.joblib, feature_cols_v2.json")

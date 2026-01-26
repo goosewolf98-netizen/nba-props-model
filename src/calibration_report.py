@@ -43,6 +43,14 @@ def _load_rmse(stat: str) -> float:
 
 def run_calibration(pred_path: Path, lines_path: Path) -> dict:
     ART_DIR.mkdir(parents=True, exist_ok=True)
+    def write_skipped(reason: str, detail: str | None = None) -> dict:
+        note = {"status": "skipped", "reason": reason}
+        if detail:
+            note["detail"] = detail
+        (ART_DIR / "calibration_report.json").write_text(json.dumps(note, indent=2))
+        pd.DataFrame().to_csv(ART_DIR / "reliability_curve.csv", index=False)
+        return note
+
     if not pred_path.exists():
         note = {"error": "missing_predictions", "pred_path": str(pred_path)}
         (ART_DIR / "calibration_report.json").write_text(json.dumps(note, indent=2))
@@ -68,20 +76,14 @@ def run_calibration(pred_path: Path, lines_path: Path) -> dict:
     preds["actual"] = pd.to_numeric(preds["actual"], errors="coerce")
 
     if not lines_path.exists():
-        note = {"note": "lines missing - skipped", "lines_path": str(lines_path)}
-        (ART_DIR / "calibration_report.json").write_text(json.dumps(note, indent=2))
-        pd.DataFrame().to_csv(ART_DIR / "reliability_curve.csv", index=False)
-        return note
+        return write_skipped("no lines matched", f"missing lines file: {lines_path}")
 
     try:
         lines = pd.read_csv(lines_path)
     except Exception:
         lines = pd.DataFrame()
     if lines.empty:
-        note = {"note": "lines missing - skipped", "lines_path": str(lines_path)}
-        (ART_DIR / "calibration_report.json").write_text(json.dumps(note, indent=2))
-        pd.DataFrame().to_csv(ART_DIR / "reliability_curve.csv", index=False)
-        return note
+        return write_skipped("no lines matched", "lines file empty")
     for col in ["game_date", "player", "stat", "line"]:
         if col not in lines.columns:
             lines[col] = pd.NA
@@ -102,10 +104,7 @@ def run_calibration(pred_path: Path, lines_path: Path) -> dict:
 
     valid = merged.dropna(subset=["line", "projection", "actual"])
     if valid.empty:
-        note = {"error": "no_matching_lines", "lines_path": str(lines_path)}
-        (ART_DIR / "calibration_report.json").write_text(json.dumps(note, indent=2))
-        pd.DataFrame().to_csv(ART_DIR / "reliability_curve.csv", index=False)
-        return note
+        return write_skipped("no lines matched", "no matching prediction/line rows")
 
     def compute_p_over(row):
         if not pd.isna(row["p_over"]):
