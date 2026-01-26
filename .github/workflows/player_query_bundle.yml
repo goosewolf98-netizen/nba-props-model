@@ -78,3 +78,4 @@ jobs:
           path: |
             artifacts/*
             data/raw/*
+            data/lines/*
