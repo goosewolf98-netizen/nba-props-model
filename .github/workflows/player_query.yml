@@ -61,7 +61,12 @@ jobs:
           python src/predict_player_prop.py --player "${{ inputs.player }}" --stat "${{ inputs.stat }}" --line "${{ inputs.line }}"
 
       - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: player-query-results
-          path: artifacts/*
+          path: |
+            artifacts/*
+            data/raw/*
+            data/lines/*
+            data/injuries/*

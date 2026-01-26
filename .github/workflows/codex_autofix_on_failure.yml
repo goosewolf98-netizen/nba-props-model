@@ -1,0 +1,32 @@
+name: Codex auto-fix on bundle failure
+
+on:
+  workflow_run:
+    workflows: ["player-query-bundle"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  codex_autofix:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout failing SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Run Codex auto-fix
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            The workflow "player-query-bundle" failed. Fix it with the smallest patch.
+            Use repo logs/artifacts (artifacts/feature_factory.log, train.log, predict.log) to find the exception.
+            Common issues: game_date dtype mismatch, missing team_abbr/opp_abbr/min columns.
+            Add schema normalizers so merges never crash.
+            Do not change model logic unless necessary.
+            Commit changes and open a PR titled "Codex: fix CI failure".
