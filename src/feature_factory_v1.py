@@ -7,10 +7,19 @@ import numpy as np
 from availability_features import add_availability_features
 from build_lineup_cache import ensure_lineup_cache
 from injuries_official import fetch_latest_injuries
-from schema_normalize import ensure_col, normalize_dates, safe_cols, norm_all
+from schema_normalize import ensure_col, normalize_dates, safe_cols, norm_all, norm_game_date
 
 RAW = Path("data/raw")
 ART = Path("artifacts")
+
+def _norm_game_date(df):
+    if df is None or len(df) == 0:
+        return df
+    if "game_date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce").dt.date.astype(str)
+    elif "date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
+    return df
 
 
 def _read_csv(name: str) -> pd.DataFrame:
@@ -51,6 +60,7 @@ def build_features():
         print(f"Context builders skipped: {exc}")
 
     pb = _read_csv("nba_player_box.csv")
+    pb = _norm_game_date(pb)
     pb = norm_all(pb)
     pb = normalize_dates(pb)
     pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
@@ -62,6 +72,7 @@ def build_features():
     print("PLAYER cols:", list(pb.columns))
 
     tb = _read_csv("nba_team_box.csv")
+    tb = _norm_game_date(tb)
     tb = norm_all(tb)
     tb = normalize_dates(tb)
     tb = ensure_col(tb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
@@ -93,6 +104,7 @@ def build_features():
             min_c:"min", pts_c:"pts", reb_c:"reb", ast_c:"ast"
         }).copy()
 
+    pb = _norm_game_date(pb)
     pb = norm_all(pb)
     pb = normalize_dates(pb)
     pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
@@ -158,6 +170,7 @@ def build_features():
         t = tb.rename(columns={tb_date:"game_date", tb_gid:"game_id", tb_abbr:"team_abbr"}).copy()
     else:
         t = pd.DataFrame(columns=["game_date", "game_id", "team_abbr"])
+    t = _norm_game_date(t)
     t = norm_all(t)
     t = normalize_dates(t)
     t = ensure_col(t, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
@@ -239,6 +252,7 @@ def build_features():
         ["game_date","team_abbr","team_ortg_roll10","team_drtg_roll10","team_pace_roll10"],
         fill_zero_cols=["team_ortg_roll10", "team_drtg_roll10", "team_pace_roll10"],
     ).copy()
+    opp_roll = _norm_game_date(opp_roll)
     opp_roll = norm_all(opp_roll)
     opp_roll = opp_roll.rename(columns={
         "team_abbr":"opp_abbr",
@@ -252,6 +266,7 @@ def build_features():
     opp_roll["opp_pace"] = opp_roll["opp_pace_roll10"]
 
     # ---------- Rest / B2B from team schedule (by team_abbr) ----------
+    rest = _norm_game_date(m)
     rest = norm_all(m)
     rest = normalize_dates(rest)
     rest = ensure_col(rest, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
@@ -285,9 +300,11 @@ def build_features():
         rest = pd.DataFrame(columns=["game_date","team_abbr","rest_days","b2b","games_last_7d"])
 
     # ---------- Merge team context into player rows ----------
+    pb = _norm_game_date(pb)
+    m = _norm_game_date(m)
     pb = norm_all(pb)
     m = norm_all(m)
-    print("MERGE DTYPES:", pb["game_date"].dtype, m["game_date"].dtype)
+    print("MERGE game_date dtypes:", pb["game_date"].dtype, m["game_date"].dtype)
     pb = pb.merge(
         safe_cols(
             m,
@@ -304,9 +321,11 @@ def build_features():
         ),
         on=["game_date","team_abbr"], how="left"
     )
+    pb = _norm_game_date(pb)
+    opp_roll = _norm_game_date(opp_roll)
     pb = norm_all(pb)
     opp_roll = norm_all(opp_roll)
-    print("MERGE DTYPES:", pb["game_date"].dtype, opp_roll["game_date"].dtype)
+    print("MERGE game_date dtypes:", pb["game_date"].dtype, opp_roll["game_date"].dtype)
     pb = pb.merge(
         opp_roll,
         on=["game_date","opp_abbr"], how="left"
@@ -327,7 +346,7 @@ def build_features():
             rest[c] = rest[c].fillna(0)
     print("REST COLS:", list(rest.columns))
     print("REST team_abbr present:", "team_abbr" in rest.columns)
-    print("MERGE DTYPES:", pb["game_date"].dtype, rest["game_date"].dtype)
+    print("MERGE game_date dtypes:", pb["game_date"].dtype, rest["game_date"].dtype)
     if "team_abbr" in pb.columns and "team_abbr" in rest.columns:
         pb = pb.merge(
             rest,
