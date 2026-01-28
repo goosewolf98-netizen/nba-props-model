@@ -24,6 +24,12 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      SPORTSDATAIO_API_KEY: ${{ secrets.SPORTSDATAIO_API_KEY }}
+      ODDSAPI_KEY: ${{ secrets.ODDSAPI_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+      BAKER_API_KEY: ${{ secrets.BAKER_API_KEY }}
 
     steps:
       - name: Checkout
@@ -55,10 +61,29 @@ jobs:
         run: |
           mkdir -p artifacts
 
+      - name: Download Kaggle datasets
+        continue-on-error: true
+        run: |
+          python src/kaggle_download.py
+          python src/normalize_kaggle_lineups.py
+          python src/normalize_kaggle_shots.py
+          python src/normalize_kaggle_injuries.py
+          python src/normalize_kaggle_game_lines.py
+
       - name: Build features v1 (log)
         continue-on-error: true
         run: |
           python src/feature_factory_v1.py 2>&1 | tee artifacts/feature_factory.log
+
+      - name: Build with/without impacts (log)
+        continue-on-error: true
+        run: |
+          python src/build_with_without_impacts.py 2>&1 | tee artifacts/with_without_impacts.log
+
+      - name: Build out players list (log)
+        continue-on-error: true
+        run: |
+          python src/get_out_players_today.py 2>&1 | tee artifacts/out_players_today.log
 
       - name: Train models (log)
         continue-on-error: true
@@ -74,7 +99,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: player-query-bundle-results
+          name: nba-props-artifacts
           path: |
             artifacts/*
             data/raw/*
+            data/lines/*
+            data/injuries/*
+            data/kaggle/*
+            data/raw/*.parquet
