@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows: ["player-query-bundle"]
     types: [completed]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -11,22 +12,28 @@ permissions:
 
 jobs:
   codex_autofix:
-    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout failing SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Run Codex auto-fix
+      - name: Download artifacts (best effort)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nba-props-artifacts
+          path: artifacts
+
+      - name: Run Codex to fix
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt: |
-            The workflow "player-query-bundle" failed. Fix it with the smallest patch.
-            Use repo logs/artifacts (artifacts/feature_factory.log, train.log, predict.log) to find the exception.
-            Common issues: game_date dtype mismatch, missing team_abbr/opp_abbr/min columns.
-            Add schema normalizers so merges never crash.
-            Do not change model logic unless necessary.
-            Commit changes and open a PR titled "Codex: fix CI failure".
+            Fix the failing bundle workflow. Use any logs available under artifacts/.
+            If artifacts are missing, infer failure from repo code and harden schema:
+            - normalize game_date to YYYY-MM-DD strings everywhere before merges
+            - normalize team_abbr/opp_abbr/min column names
+            - replace hard df[[...]] selects with safe reindex + defaults
+            Make smallest patch to get CI green. Open PR titled "Codex: fix CI failure".
