@@ -55,6 +55,15 @@ jobs:
         run: |
           mkdir -p artifacts
 
+      - name: Download Kaggle datasets
+        continue-on-error: true
+        run: |
+          python src/kaggle_download.py
+          python src/normalize_kaggle_lineups.py
+          python src/normalize_kaggle_shots.py
+          python src/normalize_kaggle_injuries.py
+          python src/normalize_kaggle_game_lines.py
+
       - name: Build features v1 (log)
         continue-on-error: true
         run: |
@@ -74,7 +83,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: player-query-bundle-results
+          name: nba-props-artifacts
           path: |
             artifacts/*
             data/raw/*
+            data/lines/*
+            data/injuries/*
+            data/kaggle/*
+            data/raw/*.parquet
