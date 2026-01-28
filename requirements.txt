@@ -8,6 +8,7 @@ lxml
 html5lib
 beautifulsoup4
 pyarrow
+kaggle
 nba_api
 pbpstats
 rapidfuzz

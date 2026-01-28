@@ -404,6 +404,66 @@ def build_features():
         pb["opp_q_count"] = pb.get("opp_q_count", 0.0)
         pb["opp_prob_count"] = 0.0
 
+    pbp_lineups_path = Path("data/raw/pbp_lineups.parquet")
+    if pbp_lineups_path.exists():
+        try:
+            pbp_lineups = pd.read_parquet(pbp_lineups_path)
+        except Exception:
+            pbp_lineups = pd.DataFrame()
+        if not pbp_lineups.empty:
+            pbp_lineups = norm_all(pbp_lineups)
+            roster_cols = [c for c in pbp_lineups.columns if c.startswith("player_on_")]
+            if roster_cols and "team_abbr" in pbp_lineups.columns:
+                roster = pbp_lineups[["game_date", "team_abbr"] + roster_cols].copy()
+                roster = roster.dropna(subset=["game_date"]).drop_duplicates()
+                roster["roster_players"] = roster[roster_cols].apply(
+                    lambda r: [p for p in r.tolist() if pd.notna(p) and str(p).strip()],
+                    axis=1,
+                )
+                roster = roster.groupby(["game_date", "team_abbr"], as_index=False).agg(
+                    roster_players=("roster_players", lambda s: sorted(set(sum(s, []))))
+                )
+                out_map = {}
+                if not availability.empty:
+                    avail_out = availability[availability["is_out"] == 1].copy()
+                    avail_out["player"] = avail_out["player"].astype(str)
+                    out_map = avail_out.groupby(["game_date", "team_abbr"])["player"].apply(set).to_dict()
+                def roster_out_count(row):
+                    out_players = out_map.get((row["game_date"], row["team_abbr"]), set())
+                    return len([p for p in row["roster_players"] if p in out_players])
+                roster["roster_out_count"] = roster.apply(roster_out_count, axis=1)
+                roster = roster[["game_date", "team_abbr", "roster_out_count"]]
+                pb = pb.merge(roster, on=["game_date", "team_abbr"], how="left")
+                pb["starters_out_count"] = pb.get("starters_out_count", pb["roster_out_count"]).fillna(0.0)
+                pb["rotation_out_count"] = pb.get("rotation_out_count", pb["roster_out_count"]).fillna(0.0)
+                pb = pb.drop(columns=["roster_out_count"], errors="ignore")
+
+    kaggle_lineups_path = Path("data/raw/kaggle_pbp_lineups.parquet")
+    if kaggle_lineups_path.exists():
+        try:
+            kaggle_lineups = pd.read_parquet(kaggle_lineups_path)
+        except Exception:
+            kaggle_lineups = pd.DataFrame()
+        if not kaggle_lineups.empty:
+            kaggle_lineups = norm_all(kaggle_lineups)
+            kaggle_lineups["game_date"] = pd.to_datetime(kaggle_lineups["game_date"], errors="coerce").dt.date.astype(str)
+            lineup_id_cols = [c for c in kaggle_lineups.columns if c.startswith("lineup") or c.startswith("player")]
+            group_cols = ["game_date", "team_abbr"]
+            lineup_count_cols = [c for c in lineup_id_cols if c not in {"game_date", "team_abbr"}]
+            agg = kaggle_lineups.groupby(group_cols, as_index=False).agg(
+                kaggle_lineup_possessions=("possessions_proxy", "sum"),
+                kaggle_lineup_minutes=("minutes_proxy", "sum"),
+                kaggle_lineup_count=(lineup_count_cols[0] if lineup_count_cols else "team_abbr", "nunique"),
+            )
+            agg = agg.rename(columns={"game_date": "game_date_key"})
+            pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+            pb = pb.merge(
+                agg,
+                on=["game_date_key", "team_abbr"],
+                how="left",
+            )
+            pb = pb.drop(columns=["game_date_key"], errors="ignore")
+
     with_without_path = ART / "with_without_features.parquet"
     if with_without_path.exists():
         try:
@@ -438,6 +498,102 @@ def build_features():
                 how="left",
             )
 
+
+    kaggle_shots_path = Path("data/raw/kaggle_shots_agg.parquet")
+    if kaggle_shots_path.exists():
+        try:
+            kaggle_shots = pd.read_parquet(kaggle_shots_path)
+        except Exception:
+            kaggle_shots = pd.DataFrame()
+        if not kaggle_shots.empty:
+            kaggle_shots = norm_all(kaggle_shots)
+            kaggle_shots["game_date"] = pd.to_datetime(kaggle_shots["game_date"], errors="coerce")
+            kaggle_shots["player_norm"] = kaggle_shots["player"].astype(str).str.lower().str.split().str.join(" ")
+            kaggle_shots = kaggle_shots.sort_values(["player_norm", "game_date"])
+            for col in ["rim_att", "mid_att", "three_att", "rim_fg", "mid_fg", "three_fg"]:
+                if col not in kaggle_shots.columns:
+                    kaggle_shots[col] = 0
+                kaggle_shots[col] = pd.to_numeric(kaggle_shots[col], errors="coerce").fillna(0)
+
+            rolling = kaggle_shots.groupby("player_norm", group_keys=False).apply(
+                lambda df: df.assign(
+                    rim_att_10g=df["rim_att"].rolling(10, min_periods=1).sum(),
+                    mid_att_10g=df["mid_att"].rolling(10, min_periods=1).sum(),
+                    three_att_10g=df["three_att"].rolling(10, min_periods=1).sum(),
+                    rim_fg_10g=df["rim_fg"].rolling(10, min_periods=1).sum(),
+                    mid_fg_10g=df["mid_fg"].rolling(10, min_periods=1).sum(),
+                    three_fg_10g=df["three_fg"].rolling(10, min_periods=1).sum(),
+                )
+            )
+            rolling["total_att_10g"] = rolling[["rim_att_10g", "mid_att_10g", "three_att_10g"]].sum(axis=1)
+            for zone in ["rim", "mid", "three"]:
+                rolling[f"{zone}_att_share_10g"] = rolling[f"{zone}_att_10g"] / rolling["total_att_10g"].replace(0, pd.NA)
+                rolling[f"{zone}_fg_pct_10g"] = rolling[f"{zone}_fg_10g"] / rolling[f"{zone}_att_10g"].replace(0, pd.NA)
+            shots_features = rolling[
+                [
+                    "game_date",
+                    "player_norm",
+                    "rim_att_share_10g",
+                    "mid_att_share_10g",
+                    "three_att_share_10g",
+                    "rim_fg_pct_10g",
+                    "mid_fg_pct_10g",
+                    "three_fg_pct_10g",
+                ]
+            ].copy()
+            shots_features["game_date"] = shots_features["game_date"].dt.date.astype(str)
+            pb["player_norm"] = pb["player"].astype(str).str.lower().str.split().str.join(" ")
+            pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+            pb = pb.merge(
+                shots_features,
+                left_on=["game_date_key", "player_norm"],
+                right_on=["game_date", "player_norm"],
+                how="left",
+            )
+            pb = pb.drop(columns=["game_date_key", "game_date_y"], errors="ignore")
+            pb = pb.rename(columns={"game_date_x": "game_date"})
+
+    kaggle_lines_path = Path("data/raw/kaggle_game_lines.parquet")
+    if kaggle_lines_path.exists():
+        try:
+            kaggle_lines = pd.read_parquet(kaggle_lines_path)
+        except Exception:
+            kaggle_lines = pd.DataFrame()
+        if not kaggle_lines.empty:
+            kaggle_lines["game_date"] = pd.to_datetime(kaggle_lines["game_date"], errors="coerce").dt.date.astype(str)
+            for col in ["spread_close", "total_close"]:
+                if col not in kaggle_lines.columns:
+                    kaggle_lines[col] = pd.NA
+                kaggle_lines[col] = pd.to_numeric(kaggle_lines[col], errors="coerce")
+            home_lines = kaggle_lines.assign(
+                team_abbr=kaggle_lines.get("home_abbr"),
+                opp_abbr=kaggle_lines.get("away_abbr"),
+                spread_close_team=kaggle_lines.get("spread_close"),
+            )
+            away_lines = kaggle_lines.assign(
+                team_abbr=kaggle_lines.get("away_abbr"),
+                opp_abbr=kaggle_lines.get("home_abbr"),
+                spread_close_team=-kaggle_lines.get("spread_close"),
+            )
+            team_lines = pd.concat([home_lines, away_lines], ignore_index=True)
+            team_lines = team_lines[
+                ["game_date", "team_abbr", "opp_abbr", "spread_close_team", "total_close"]
+            ].dropna(
+                subset=["game_date", "team_abbr", "opp_abbr"],
+                how="any",
+            )
+            team_lines = team_lines.groupby(["game_date", "team_abbr", "opp_abbr"], as_index=False).agg(
+                spread_close_team=("spread_close_team", "mean"),
+                total_close=("total_close", "mean"),
+            )
+            team_lines = team_lines.rename(columns={"game_date": "game_date_key"})
+            pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+            pb = pb.merge(
+                team_lines,
+                on=["game_date_key", "team_abbr", "opp_abbr"],
+                how="left",
+            )
+            pb = pb.drop(columns=["game_date_key"], errors="ignore")
     use_market_open = os.getenv("USE_MARKET_OPEN_FEATURES", "0") == "1"
     line_moves_path = Path("data/lines/props_line_movement.csv")
     for stat in ["pts", "reb", "ast"]:
