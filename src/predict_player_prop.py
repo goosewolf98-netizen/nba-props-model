@@ -13,6 +13,7 @@ import pandas as pd
 from joblib import load
 
 ART_DIR = Path("artifacts")
+MODELS_DIR = Path("data/models")
 
 def normal_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
@@ -248,6 +249,14 @@ def load_market_context(player_name: str, stat: str):
 # ---------------- Teammate context ----------------
 
 def load_teammates_out(team_abbr: str, game_date: str, player_name: str):
+    out_json_path = ART_DIR / "out_players_today.json"
+    if out_json_path.exists():
+        try:
+            out_json = json.loads(out_json_path.read_text())
+            out_list = out_json.get(str(team_abbr), [])
+            return [p for p in out_list if str(p).strip().lower() != str(player_name).strip().lower()]
+        except Exception:
+            pass
     avail_path = Path("data/injuries/availability_by_game.csv")
     if not avail_path.exists():
         return []
@@ -269,6 +278,94 @@ def load_teammates_out(team_abbr: str, game_date: str, player_name: str):
         & (avail["player"].str.lower() != str(player_name).strip().lower())
     ]
     return subset["player"].dropna().astype(str).head(3).tolist()
+
+# ---------------- With/without impacts ----------------
+
+def _norm_name(name: str) -> str:
+    return " ".join(str(name).strip().lower().split())
+
+
+def load_with_without_impacts(team_abbr: str, player_name: str, teammates_out: list[str]):
+    impacts_path = MODELS_DIR / "with_without_impacts.parquet"
+    if not impacts_path.exists():
+        return {
+            "bumps": [],
+            "note": "no with/without sample",
+            "d_min_total": 0.0,
+            "d_pts_pm_total": 0.0,
+            "d_reb_pm_total": 0.0,
+            "d_ast_pm_total": 0.0,
+        }
+    try:
+        impacts = pd.read_parquet(impacts_path)
+    except Exception:
+        return {
+            "bumps": [],
+            "note": "no with/without sample",
+            "d_min_total": 0.0,
+            "d_pts_pm_total": 0.0,
+            "d_reb_pm_total": 0.0,
+            "d_ast_pm_total": 0.0,
+        }
+    if impacts.empty:
+        return {
+            "bumps": [],
+            "note": "no with/without sample",
+            "d_min_total": 0.0,
+            "d_pts_pm_total": 0.0,
+            "d_reb_pm_total": 0.0,
+            "d_ast_pm_total": 0.0,
+        }
+
+    impacts["player_norm"] = impacts["player"].astype(str).str.lower().str.split().str.join(" ")
+    impacts["teammate_norm"] = impacts["teammate"].astype(str).str.lower().str.split().str.join(" ")
+    player_norm = _norm_name(player_name)
+    team_mask = impacts["team_abbr"].astype(str) == str(team_abbr)
+    impacts = impacts[team_mask & (impacts["player_norm"] == player_norm)]
+
+    bumps = []
+    d_min_total = 0.0
+    d_pts_total = 0.0
+    d_reb_total = 0.0
+    d_ast_total = 0.0
+
+    for teammate in teammates_out:
+        t_norm = _norm_name(teammate)
+        row = impacts[impacts["teammate_norm"] == t_norm]
+        if row.empty:
+            continue
+        entry = row.iloc[0]
+        d_min = float(entry.get("d_min", 0.0))
+        d_pts = float(entry.get("d_pts_pm", 0.0))
+        d_reb = float(entry.get("d_reb_pm", 0.0))
+        d_ast = float(entry.get("d_ast_pm", 0.0))
+        bumps.append(
+            {
+                "teammate_out": teammate,
+                "d_min": d_min,
+                "d_pts_pm": d_pts,
+                "d_reb_pm": d_reb,
+                "d_ast_pm": d_ast,
+                "sample_sizes": {
+                    "n_with": int(entry.get("n_with", 0)),
+                    "n_without": int(entry.get("n_without", 0)),
+                },
+            }
+        )
+        d_min_total += d_min
+        d_pts_total += d_pts
+        d_reb_total += d_reb
+        d_ast_total += d_ast
+
+    note = "no with/without sample" if not bumps else None
+    return {
+        "bumps": bumps,
+        "note": note,
+        "d_min_total": d_min_total,
+        "d_pts_pm_total": d_pts_total,
+        "d_reb_pm_total": d_reb_total,
+        "d_ast_pm_total": d_ast_total,
+    }
 
 # ---------------- Main ----------------
 
@@ -307,7 +404,46 @@ def main():
         X_rate = X.copy()
         X_rate["min_pred_feature"] = min_pred
         rate_pred = float(np.clip(rate_model.predict(X_rate)[0], 0.0, 10.0))
-        proj = min_pred * rate_pred
+
+        recent_minutes_roll = float(last.get("min_r5", last.get("min_r10", 0.0)))
+        rotation_out_count = float(last.get("rotation_out_count", 0.0))
+        starters_out_count = float(last.get("starters_out_count", 0.0))
+        role = "starter" if max(recent_minutes_roll, min_pred) >= 26 else "bench"
+        rotation_bump = rotation_out_count * (0.6 if role == "starter" else 0.35)
+        rotation_bump += starters_out_count * (0.2 if role == "starter" else 0.4)
+
+        teammates_out = load_teammates_out(
+            str(last.get("team_abbr", "")),
+            str(pd.to_datetime(last["game_date"]).date()),
+            str(last["player"]),
+        )
+        impacts = load_with_without_impacts(str(last.get("team_abbr", "")), str(last["player"]), teammates_out)
+
+        d_min_total = float(np.clip(impacts["d_min_total"], -6.0, 6.0))
+        d_rate_pm_total = impacts["d_pts_pm_total"]
+        if args.stat == "reb":
+            d_rate_pm_total = impacts["d_reb_pm_total"]
+        elif args.stat == "ast":
+            d_rate_pm_total = impacts["d_ast_pm_total"]
+
+        rate_pct = d_rate_pm_total / rate_pred if rate_pred > 1e-6 else 0.0
+        rate_pct = float(np.clip(rate_pct, -0.15, 0.15))
+
+        minutes_base = min_pred
+        minutes_adj = float(np.clip(minutes_base + rotation_bump + d_min_total, 0.0, 44.0))
+        rate_adj = rate_pred * (1.0 + rate_pct)
+
+        pace_roll = float(last.get("team_pace_roll10", last.get("team_pace", 0.0)))
+        opp_pace = float(last.get("opp_pace", 0.0))
+        pace_diff = opp_pace - pace_roll
+        shot_profile_adj = 0.0
+        if args.stat == "pts":
+            three_share = float(last.get("three_att_share_10g", 0.0))
+            if pace_diff > 2.0 and three_share >= 0.4:
+                shot_profile_adj = min(0.03, pace_diff / 50.0)
+        rate_adj = rate_adj * (1.0 + shot_profile_adj)
+
+        proj = minutes_adj * rate_adj
 
         rmse = load_rmse_v2(args.stat)
         z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
@@ -329,10 +465,7 @@ def main():
         if market_ctx.get("market_close_line") is not None:
             edge_close = float(proj - market_ctx["market_close_line"])
 
-        teammates_out = load_teammates_out(str(last.get("team_abbr", "")), str(pd.to_datetime(last["game_date"]).date()), str(last["player"]))
-        recent_minutes_roll = float(last.get("min_r5", last.get("min_r10", 0.0)))
         opp_def_rating_roll = float(last.get("opp_def_rating_roll", last.get("opp_drtg_roll10", 0.0)))
-        pace_roll = float(last.get("team_pace_roll10", last.get("team_pace", 0.0)))
 
         if availability_injury.get("status", "").upper() == "OUT" or inj.get("status") == "OUT":
             best_side = "NO_BET"
@@ -347,9 +480,10 @@ def main():
             "line": float(args.line),
             "projection": float(proj),
             "edge": edge,
-            "minutes_pred": float(min_pred),
-            "minutes_projection": float(min_pred),
+            "minutes_pred": float(minutes_base),
+            "minutes_projection": float(minutes_adj),
             "rate_pred": float(rate_pred),
+            "rate_adj": float(rate_adj),
             "rmse_used": float(rmse),
             "p_over": float(p_over),
             "p_under": float(p_under),
@@ -395,7 +529,18 @@ def main():
                 "edge_vs_open": edge_open,
                 "edge_vs_close": edge_close,
             },
-            "injury_overlay": inj
+            "injury_overlay": inj,
+            "with_without_context": {
+                "minutes_base": float(minutes_base),
+                "minutes_adj": float(minutes_adj),
+                "minutes_role_adj": float(rotation_bump),
+                "minutes_with_without_adj": float(d_min_total),
+                "rate_pct_adj": float(rate_pct),
+                "shot_profile_adj": float(shot_profile_adj),
+                "role": role,
+                "bumps_applied": impacts["bumps"],
+                "note": impacts.get("note"),
+            },
         }
 
         ART_DIR.mkdir(parents=True, exist_ok=True)
