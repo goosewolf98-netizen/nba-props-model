@@ -74,7 +74,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: player-query-bundle-results
+          name: nba-props-artifacts
           path: |
             artifacts/*
             data/raw/*
+            data/lines/*
+            data/injuries/*
