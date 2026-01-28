@@ -31,7 +31,7 @@ jobs:
       CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
       BAKER_API_KEY: ${{ secrets.BAKER_API_KEY }}
 
-    steps:
+    steps:      
       - name: Checkout
         uses: actions/checkout@v4
 
