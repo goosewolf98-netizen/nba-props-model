@@ -25,7 +25,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
-    steps:
+    steps:      - name: Debug secrets present (does not print values)
+        run: |
+          if [ -z "${SPORTSDATAIO_API_KEY}" ]; then echo "SPORTSDATAIO_API_KEY: MISSING"; else echo "SPORTSDATAIO_API_KEY: PRESENT"; fi
+          if [ -z "${ODDSAPI_KEY}" ]; then echo "ODDSAPI_KEY: MISSING"; else echo "ODDSAPI_KEY: PRESENT"; fi
+          if [ -z "${OPENAI_API_KEY}" ]; then echo "OPENAI_API_KEY: MISSING"; else echo "OPENAI_API_KEY: PRESENT"; fi
+        env:
+          SPORTSDATAIO_API_KEY: ${{ secrets.SPORTSDATAIO_API_KEY }}
+          ODDSAPI_KEY: ${{ secrets.ODDSAPI_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
       - name: Checkout
         uses: actions/checkout@v4
 
