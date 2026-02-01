@@ -60,6 +60,12 @@ jobs:
         run: |
           python src/fetch_espn_injuries.py
 
+      - name: Fetch Real Live Odds
+        env:
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+        run: |
+          python src/fetch_live_odds_api.py
+
       - name: Make a pick for the requested player
         run: |
           python src/predict_player_prop.py --player "${{ inputs.player }}" --stat "${{ inputs.stat }}" --line "${{ inputs.line }}"
