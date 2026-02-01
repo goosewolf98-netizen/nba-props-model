@@ -11,6 +11,7 @@ from urllib.request import urlopen, Request
 import numpy as np
 import pandas as pd
 from joblib import load
+from scipy.stats import poisson
 
 ART_DIR = Path("artifacts")
 MODELS_DIR = Path("data/models")
@@ -445,10 +446,18 @@ def main():
 
         proj = minutes_adj * rate_adj
 
-        rmse = load_rmse_v2(args.stat)
-        z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
-        p_over = 1.0 - normal_cdf(z)
-        p_under = 1.0 - p_over
+        if args.stat in ["reb", "ast"]:
+            # Sharp Poisson approach for discrete low-count stats
+            # Poisson handles the skew and discrete nature of reb/ast better than Normal
+            p_over = float(1.0 - poisson.cdf(args.line, proj))
+            p_under = float(poisson.cdf(args.line - 0.001, proj))
+            rmse = math.sqrt(proj) # Poisson variance is the mean
+        else:
+            # Normal approximation for higher-count stats (pts)
+            rmse = load_rmse_v2(args.stat)
+            z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
+            p_over = 1.0 - normal_cdf(z)
+            p_under = 1.0 - p_over
 
         best_p = max(p_over, p_under)
         best_side = "PASS"

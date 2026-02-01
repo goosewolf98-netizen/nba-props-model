@@ -5,6 +5,7 @@ import json
 import math
 import argparse
 import pandas as pd
+from scipy.stats import poisson
 
 
 ART_DIR = Path("artifacts")
@@ -143,8 +144,18 @@ def run_backtest(pred_path: Path, lines_path: Path) -> dict:
     def compute_probs(row):
         if not pd.isna(row["p_over"]) and not pd.isna(row["p_under"]):
             return row["p_over"], row["p_under"]
-        rmse = _load_rmse(row["stat_norm"])
-        p_over = _prob_over(row["projection"], row["line"], rmse)
+
+        stat = row["stat_norm"]
+        proj = row["projection"]
+        line = row["line"]
+
+        if stat in ["reb", "ast"] and proj > 0:
+            p_over = float(1.0 - poisson.cdf(line, proj))
+            p_under = float(poisson.cdf(line - 0.001, proj))
+            return p_over, p_under
+
+        rmse = _load_rmse(stat)
+        p_over = _prob_over(proj, line, rmse)
         return p_over, 1.0 - p_over
 
     probs = valid.apply(lambda r: compute_probs(r), axis=1, result_type="expand")
