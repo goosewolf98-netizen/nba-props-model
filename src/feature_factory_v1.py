@@ -174,9 +174,6 @@ def build_features():
 
     pb["team_abbr"] = pb["team_id"].map(id_to_abbr).fillna("").astype(str)
 
-    # Composite stats
-    pb["pra"] = pb["pts"] + pb["reb"] + pb["ast"]
-
     # ---------- Rolling player features (no leakage) ----------
     pb = pb.sort_values(["player","game_date"])
     g = pb.groupby("player", group_keys=False)
@@ -253,17 +250,28 @@ def build_features():
         t["ortg_raw"] = np.where(t["poss"] > 0, (t[pts_t] / t["poss"]) * 100.0, 0.0)
 
     # opponent join (same game_id, other team row)
+    # We want to see what stats were allowed by the team
+    stats_to_track = ["pts", "reb", "ast", "stl", "blk", "fg3m"]
+    # Check if they exist in t
+    t_cols = [c for c in stats_to_track if c in t.columns]
+
+    t2_cols = ["game_id","team_abbr","poss","ortg_raw","pace_raw"] + t_cols
     t2 = safe_cols(
         t,
-        ["game_id","team_abbr","poss","ortg_raw","pace_raw"],
-        fill_zero_cols=["poss", "ortg_raw", "pace_raw"],
+        t2_cols,
+        fill_zero_cols=["poss", "ortg_raw", "pace_raw"] + t_cols,
     ).copy()
-    t2 = t2.rename(columns={
+
+    rename_map = {
         "team_abbr":"opp_abbr",
         "poss":"opp_poss",
         "ortg_raw":"opp_ortg_raw",
         "pace_raw":"opp_pace_raw"
-    })
+    }
+    for c in t_cols:
+        rename_map[c] = f"opp_{c}_raw"
+
+    t2 = t2.rename(columns=rename_map)
 
     # join on game_id, exclude same team
     # Drop opp_abbr from t if it exists to avoid merge suffix confusion
@@ -273,6 +281,11 @@ def build_features():
 
     # defensive rating = opponent ORTG (same game possessions scale)
     m["drtg_raw"] = m["opp_ortg_raw"]
+
+    # Granular defensive stats: stats allowed per 100 possessions
+    for c in t_cols:
+        raw_col = f"opp_{c}_raw"
+        m[f"team_{c}_allowed_per100"] = np.where(m["poss"] > 0, (m[raw_col] / m["poss"]) * 100.0, 0.0)
 
     # keep one opponent row per team-game
     m = m.sort_values(["game_id","team_abbr"]).drop_duplicates(["game_id","team_abbr"])
@@ -285,25 +298,37 @@ def build_features():
     m["team_drtg_roll10"] = tg["drtg_raw"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
     m["team_pace_roll10"] = tg["pace_raw"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
 
+    for c in t_cols:
+        m[f"team_{c}_allowed_roll10"] = tg[f"team_{c}_allowed_per100"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
+
     # backwards-compatible names
     m["team_ortg"] = m["team_ortg_roll10"]
     m["team_drtg"] = m["team_drtg_roll10"]
     m["team_pace"] = m["team_pace_roll10"]
 
     # build opponent rolling tables by re-keying
+    opp_cols = ["game_date","team_abbr","team_ortg_roll10","team_drtg_roll10","team_pace_roll10"]
+    for c in t_cols:
+        opp_cols.append(f"team_{c}_allowed_roll10")
+
     opp_roll = safe_cols(
         m,
-        ["game_date","team_abbr","team_ortg_roll10","team_drtg_roll10","team_pace_roll10"],
-        fill_zero_cols=["team_ortg_roll10", "team_drtg_roll10", "team_pace_roll10"],
+        opp_cols,
+        fill_zero_cols=opp_cols[2:],
     ).copy()
     opp_roll = _norm_game_date(opp_roll)
     opp_roll = norm_all(opp_roll)
-    opp_roll = opp_roll.rename(columns={
+
+    rename_opp = {
         "team_abbr":"opp_abbr",
         "team_ortg_roll10":"opp_ortg_roll10",
         "team_drtg_roll10":"opp_drtg_roll10",
         "team_pace_roll10":"opp_pace_roll10",
-    })
+    }
+    for c in t_cols:
+        rename_opp[f"team_{c}_allowed_roll10"] = f"opp_{c}_allowed_roll10"
+
+    opp_roll = opp_roll.rename(columns=rename_opp)
 
     opp_roll["opp_ortg"] = opp_roll["opp_ortg_roll10"]
     opp_roll["opp_drtg"] = opp_roll["opp_drtg_roll10"]
@@ -874,12 +899,23 @@ def build_features():
         pd.to_numeric(pb["player_on_off_net"], errors="coerce").fillna(0.0),
     )
 
+    # ---------- Professional Sharp Features ----------
+    if "MATCHUP" in pb.columns:
+        pb["is_home"] = pb["MATCHUP"].str.contains("vs.").astype(int)
+    else:
+        pb["is_home"] = 1
+
+    # Composite stats
+    pb["pra"] = pb["pts"] + pb["reb"] + pb["ast"]
+
     # fill defaults
     for c in [
         "team_ortg","team_drtg","team_pace",
         "team_ortg_roll10","team_drtg_roll10","team_pace_roll10",
         "opp_ortg","opp_drtg","opp_pace",
         "opp_ortg_roll10","opp_drtg_roll10","opp_pace_roll10",
+        "opp_pts_allowed_roll10", "opp_reb_allowed_roll10", "opp_ast_allowed_roll10",
+        "opp_stl_allowed_roll10", "opp_blk_allowed_roll10", "opp_fg3m_allowed_roll10",
         "rest_days","games_last_7d",
         "team_out_count","team_doubt_count","team_q_count","team_prob_count",
         "opp_out_count","opp_doubt_count","opp_q_count","opp_prob_count",
@@ -889,6 +925,8 @@ def build_features():
         "player_on_off_net","player_on_off_pace","player_minutes_on_recent",
         "opp_def_net_recent","top_synergy_teammate_on_flag","synergy_delta_proxy",
         "opp_def_rating_roll","opp_pace_roll","opp_reb_rate_allowed","opp_ast_rate_allowed",
+        "opp_pts_allowed_roll10", "opp_reb_allowed_roll10", "opp_ast_allowed_roll10",
+        "opp_stl_allowed_roll10", "opp_blk_allowed_roll10", "opp_fg3m_allowed_roll10",
         "market_open_line_pts","market_open_implied_over_pts","market_open_implied_under_pts","market_book_count_pts","early_line_move_pts",
         "market_open_line_reb","market_open_implied_over_reb","market_open_implied_under_reb","market_book_count_reb","early_line_move_reb",
         "market_open_line_ast","market_open_implied_over_ast","market_open_implied_under_ast","market_book_count_ast","early_line_move_ast",
@@ -903,6 +941,7 @@ def build_features():
     # output
     engineered = [
         "gp_last14",
+        "is_home",
         "team_ortg","team_drtg","team_pace",
         "team_ortg_roll10","team_drtg_roll10","team_pace_roll10",
         "opp_ortg","opp_drtg","opp_pace",
@@ -921,7 +960,7 @@ def build_features():
         "market_open_line_ast","market_open_implied_over_ast","market_open_implied_under_ast","market_book_count_ast","early_line_move_ast",
     ] + [c for c in pb.columns if c.endswith(("_r5","_r10","_sd10"))]
 
-    keep_cols = ["player","game_date","team_abbr","opp_abbr","min","pts","reb","ast", "pra", "stl", "blk", "tpm"] + engineered
+    keep_cols = sorted(list(set(["player","game_date","team_abbr","opp_abbr","min","pts","reb","ast", "pra", "stl", "blk", "tpm"] + engineered)))
     if "lineup_cache_timestamp" in pb.columns:
         keep_cols.append("lineup_cache_timestamp")
     out_df = safe_cols(
