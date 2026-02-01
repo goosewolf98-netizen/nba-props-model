@@ -54,6 +54,8 @@ def main():
     tb["game_date"] = pd.to_datetime(tb["game_date"], errors="coerce")
     tb = tb.dropna(subset=["game_date"])
     tb = tb.sort_values(["team_abbr", "game_date"])
+    tb["game_date_dt"] = tb["game_date"] # keep dt for rolling/sorting if needed
+    tb["game_date"] = tb["game_date"].dt.date.astype(str)
 
     fga = next((c for c in ["field_goals_attempted", "fga"] if c in tb.columns), None)
     fta = next((c for c in ["free_throws_attempted", "fta"] if c in tb.columns), None)

@@ -25,6 +25,11 @@ def _norm_game_date(df):
 def _read_csv(name: str) -> pd.DataFrame:
     p = RAW / name
     if not p.exists():
+        # Fallback for hoopR bundle naming
+        if "player_box" in name:
+            alt = RAW / "nba_player_box_2024_25_and_2025_26.csv"
+            if alt.exists():
+                return pd.read_csv(alt)
         raise FileNotFoundError(f"Missing {p}")
     return pd.read_csv(p)
 
@@ -115,7 +120,7 @@ def build_features():
             columns=["player", "game_date", "team_id", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast"]
         )
 
-    pb["game_date"] = pd.to_datetime(pb["game_date"], errors="coerce")
+    pb = _norm_game_date(pb)
     pb = pb.dropna(subset=["game_date"])
     pb["player"] = pb["player"].astype(str)
     pb["opp_abbr"] = pb["opp_abbr"].astype(str)
@@ -181,7 +186,7 @@ def build_features():
         t["game_date"] = pd.to_datetime(t["game_date"], errors="coerce")
     if "team_abbr" not in t.columns:
         t["team_abbr"] = ""
-    t["game_date"] = pd.to_datetime(t["game_date"], errors="coerce")
+    t = _norm_game_date(t)
     t = t.dropna(subset=["game_date"])
     t["team_abbr"] = t["team_abbr"].astype(str)
     print("SCHED cols:", list(t.columns))
@@ -273,19 +278,21 @@ def build_features():
     rest = ensure_col(rest, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
     print("rest_df columns:", list(rest.columns))
     rest = safe_cols(rest, ["game_date", "team_abbr"])
-    rest["game_date"] = pd.to_datetime(rest["game_date"], errors="coerce")
+    rest = _norm_game_date(rest)
     if any(c not in rest.columns for c in ["game_date", "team_abbr"]) or not rest["team_abbr"].notna().any():
         print("Warning: rest_df missing required columns; writing zeros.")
         rest = pd.DataFrame(columns=["game_date","team_abbr","rest_days","b2b","games_last_7d"])
+
     if "team_abbr" in rest.columns and rest["team_abbr"].notna().any():
         rest = rest.drop_duplicates().sort_values(["team_abbr","game_date"]).copy()
-        rest["rest_days"] = rest.groupby("team_abbr")["game_date"].diff().dt.days
+        rest["_game_date_dt"] = pd.to_datetime(rest["game_date"])
+        rest["rest_days"] = rest.groupby("team_abbr")["_game_date_dt"].diff().dt.days
         rest["rest_days"] = rest["rest_days"].fillna(7).clip(lower=0, upper=14)
         rest["b2b"] = (rest["rest_days"] <= 1).astype(int)
 
         def games_last_7d(g):
-            g = g.sort_values("game_date").copy()
-            g = g.set_index("game_date")
+            g = g.sort_values("_game_date_dt").copy()
+            g = g.set_index("_game_date_dt")
             cnt = g["b2b"].rolling("7D").count().fillna(0) - 1
             g["games_last_7d"] = cnt.clip(lower=0).values
             return g.reset_index()
@@ -298,6 +305,7 @@ def build_features():
         )
     else:
         rest = pd.DataFrame(columns=["game_date","team_abbr","rest_days","b2b","games_last_7d"])
+    rest["team_abbr"] = rest["team_abbr"].astype(str)
 
     # ---------- Merge team context into player rows ----------
     pb = _norm_game_date(pb)
@@ -789,7 +797,7 @@ def build_features():
         top_out_flag = flags[1]
     else:
         pb["top_synergy_teammate_on_flag"] = 0.0
-        top_out_flag = 0.0
+        top_out_flag = pd.Series(0.0, index=pb.index)
 
     pb["synergy_delta_proxy"] = np.where(
         pd.to_numeric(top_out_flag, errors="coerce").fillna(0.0) > 0,
