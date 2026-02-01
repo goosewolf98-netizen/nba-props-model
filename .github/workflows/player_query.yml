@@ -34,7 +34,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
 
-      - name: Download 2024-25 NBA boxscore bundle (Python)
+      - name: Download 2024-26 NBA boxscore bundle (Python)
         run: |
           python src/download_nba_api_data.py
 
