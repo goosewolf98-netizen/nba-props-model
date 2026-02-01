@@ -12,10 +12,13 @@ OUT_PATH = Path("artifacts/with_without_features.parquet")
 
 
 def _load_player_box() -> pd.DataFrame:
-    if not RAW_PLAYER.exists():
+    path = RAW_PLAYER
+    if not path.exists():
+        path = RAW_PLAYER.parent / "nba_player_box_2024_25_and_2025_26.csv"
+    if not path.exists():
         return pd.DataFrame()
     try:
-        df = pd.read_csv(RAW_PLAYER)
+        df = pd.read_csv(path)
     except Exception:
         return pd.DataFrame()
     df = norm_all(df)
@@ -57,6 +60,8 @@ def main():
 
     pb[min_col] = pd.to_numeric(pb[min_col], errors="coerce").fillna(0.0)
     pb["player"] = pb[player_col].astype(str)
+    if "team_abbr" not in pb.columns:
+        pb = norm_all(pb)
     pb["team_abbr"] = pb["team_abbr"].astype(str)
     pb["game_date"] = pb["game_date"].astype(str)
 
@@ -73,15 +78,9 @@ def main():
         reb=("reb", "mean") if "reb" in pb.columns else ("min", "mean"),
         ast=("ast", "mean") if "ast" in pb.columns else ("min", "mean"),
     )
-    top_usage = team_usage.groupby("team_abbr").apply(
-        lambda g: g.sort_values("pts", ascending=False).head(3)
-    ).reset_index(drop=True)
-    top_ast = team_usage.groupby("team_abbr").apply(
-        lambda g: g.sort_values("ast", ascending=False).head(3)
-    ).reset_index(drop=True)
-    top_reb = team_usage.groupby("team_abbr").apply(
-        lambda g: g.sort_values("reb", ascending=False).head(3)
-    ).reset_index(drop=True)
+    top_usage = team_usage.sort_values(["team_abbr", "pts"], ascending=[True, False]).groupby("team_abbr").head(3)
+    top_ast = team_usage.sort_values(["team_abbr", "ast"], ascending=[True, False]).groupby("team_abbr").head(3)
+    top_reb = team_usage.sort_values(["team_abbr", "reb"], ascending=[True, False]).groupby("team_abbr").head(3)
 
     top_usage_map = top_usage.groupby("team_abbr")["player"].apply(list).to_dict()
     top_ast_map = top_ast.groupby("team_abbr")["player"].apply(list).to_dict()

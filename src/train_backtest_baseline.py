@@ -217,8 +217,8 @@ def walk_forward_v2(df: pd.DataFrame, stat: str, feature_cols: list[str]):
         out["y_pred"] = proj
         out["projection"] = proj
         out["actual"] = y_true
-        out["p_over"] = 0.5
-        out["p_under"] = 0.5
+        out["p_over"] = np.nan
+        out["p_under"] = np.nan
         out["train_end"] = train_end
         preds_all.append(out)
 
@@ -351,12 +351,12 @@ if __name__ == "__main__":
         preds_out = pd.concat(wf_preds_all, ignore_index=True)
         for col in required_cols:
             if col not in preds_out.columns:
-                preds_out[col] = 0.5 if col in ["p_over", "p_under"] else pd.NA
+                preds_out[col] = np.nan if col in ["p_over", "p_under"] else pd.NA
         preds_out.to_csv(pred_path, index=False)
     else:
         empty = pd.DataFrame(columns=required_cols)
-        empty["p_over"] = 0.5
-        empty["p_under"] = 0.5
+        empty["p_over"] = np.nan
+        empty["p_under"] = np.nan
         empty.to_csv(pred_path, index=False)
     try:
         subprocess.check_call([sys.executable, "src/sdi_props_lines.py"])
@@ -388,8 +388,8 @@ if __name__ == "__main__":
         required_cols = ["game_date", "player", "stat", "projection", "p_over", "p_under", "actual"]
         if not wf_pred_path.exists():
             empty = pd.DataFrame(columns=required_cols)
-            empty["p_over"] = 0.5
-            empty["p_under"] = 0.5
+            empty["p_over"] = np.nan
+            empty["p_under"] = np.nan
             empty.to_csv(wf_pred_path, index=False)
         if not wf_metrics_path.exists():
             wf_metrics_path.write_text(json.dumps({"status": "placeholder"}, indent=2))

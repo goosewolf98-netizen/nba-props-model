@@ -20,9 +20,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
 
-      - name: Download 2024-25 player boxscores (R)
+      - name: Download 2024-25 NBA boxscore bundle (R)
         run: |
-          Rscript src/download_hoopr_2024.R
+          Rscript src/download_hoopr_nba_bundle.R
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -33,6 +33,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Run feature factory
+        run: |
+          python src/feature_factory_v1.py
 
       - name: Train + backtest baseline
         run: |
