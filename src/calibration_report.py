@@ -17,9 +17,15 @@ def _normalize_player(name: str) -> str:
 
 def _normalize_market(market: str) -> str:
     market = str(market).strip().lower()
-    mapping = {"points": "pts", "point": "pts", "pts": "pts",
-               "rebounds": "reb", "rebound": "reb", "reb": "reb",
-               "assists": "ast", "assist": "ast", "ast": "ast"}
+    mapping = {
+        "points": "pts", "point": "pts", "pts": "pts",
+        "rebounds": "reb", "rebound": "reb", "reb": "reb",
+        "assists": "ast", "assist": "ast", "ast": "ast",
+        "pts+reb+ast": "pra", "pra": "pra",
+        "steals": "stl", "stl": "stl",
+        "blocks": "blk", "blk": "blk",
+        "three pointers made": "tpm", "tpm": "tpm", "fg3m": "tpm"
+    }
     return mapping.get(market, market)
 
 
@@ -38,7 +44,7 @@ def _load_rmse(stat: str) -> float:
             return float(data[stat]["overall"]["rmse"])
         except Exception:
             pass
-    fallback = {"pts": 6.0, "reb": 2.2, "ast": 1.8}
+    fallback = {"pts": 6.0, "reb": 2.2, "ast": 1.8, "pra": 8.0, "stl": 1.2, "blk": 1.2, "tpm": 1.5}
     return fallback.get(stat, 3.0)
 
 
@@ -115,7 +121,7 @@ def run_calibration(pred_path: Path, lines_path: Path) -> dict:
         proj = row["projection"]
         line = row["line"]
 
-        if stat in ["reb", "ast"] and proj > 0:
+        if stat in ["reb", "ast", "pra", "stl", "blk", "tpm"] and proj > 0:
             return float(1.0 - poisson.cdf(line, proj))
 
         rmse = _load_rmse(stat)

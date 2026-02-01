@@ -373,7 +373,7 @@ def load_with_without_impacts(team_abbr: str, player_name: str, teammates_out: l
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--player", required=True)
-    parser.add_argument("--stat", required=True, choices=["pts", "reb", "ast"])
+    parser.add_argument("--stat", required=True, choices=["pts", "reb", "ast", "pra", "stl", "blk", "tpm"])
     parser.add_argument("--line", required=True, type=float)
     args = parser.parse_args()
 
@@ -426,6 +426,8 @@ def main():
             d_rate_pm_total = impacts["d_reb_pm_total"]
         elif args.stat == "ast":
             d_rate_pm_total = impacts["d_ast_pm_total"]
+        elif args.stat == "pra":
+            d_rate_pm_total = impacts["d_pts_pm_total"] + impacts["d_reb_pm_total"] + impacts["d_ast_pm_total"]
 
         # Sharp Usage Redistribution Logic
         # We calculate how much the player's Usage Rate is expected to increase
@@ -465,9 +467,9 @@ def main():
 
         proj = minutes_adj * rate_adj
 
-        if args.stat in ["reb", "ast"]:
-            # Sharp Poisson approach for discrete low-count stats
-            # Poisson handles the skew and discrete nature of reb/ast better than Normal
+        if args.stat in ["reb", "ast", "pra", "stl", "blk", "tpm"]:
+            # Sharp Poisson approach for discrete count stats
+            # Poisson handles the skew and discrete nature of these stats better than Normal
             p_over = float(1.0 - poisson.cdf(args.line, proj))
             p_under = float(poisson.cdf(args.line - 0.001, proj))
             rmse = math.sqrt(proj) # Poisson variance is the mean

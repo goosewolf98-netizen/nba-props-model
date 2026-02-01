@@ -82,8 +82,12 @@ def main():
 
     opp_roll = tb[["game_date", "team_abbr", "opp_def_rating_roll", "opp_pace_roll"]].copy()
     opp_roll = opp_roll.rename(columns={"team_abbr": "opp_abbr"})
+    opp_roll["game_date"] = opp_roll["game_date"].astype(str)
+    opp_roll["opp_abbr"] = opp_roll["opp_abbr"].astype(str)
 
     pb = norm_all(pb)
+    pb["game_date"] = pb["game_date"].astype(str)
+    pb["opp_abbr"] = pb["opp_abbr"].astype(str)
     pb = pb.reindex(columns=["game_date", "opp_abbr"])
     pb = pb.dropna(subset=["game_date"]).drop_duplicates()
     merged = pb.merge(opp_roll, on=["game_date", "opp_abbr"], how="left")

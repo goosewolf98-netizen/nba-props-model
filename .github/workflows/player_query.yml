@@ -11,7 +11,7 @@ on:
         description: "Stat to predict"
         required: true
         type: choice
-        options: [pts, reb, ast]
+        options: [pts, reb, ast, pra, stl, blk, tpm]
       line:
         description: "Prop line (example: 24.5)"
         required: true
@@ -34,9 +34,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
 
-      - name: Download 2024-25 NBA boxscore bundle (R)
+      - name: Download 2024-25 NBA boxscore bundle (Python)
         run: |
-          Rscript src/download_hoopr_nba_bundle.R
+          python src/download_nba_api_data.py
 
       - name: Setup Python
         uses: actions/setup-python@v5

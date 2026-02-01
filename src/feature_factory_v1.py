@@ -94,6 +94,9 @@ def build_features():
     pts_c    = _pick(pb, ["points", "pts"])
     reb_c    = _pick(pb, ["rebounds", "reb", "trb"])
     ast_c    = _pick(pb, ["assists", "ast"])
+    stl_c    = _pick(pb, ["stl", "steals"])
+    blk_c    = _pick(pb, ["blk", "blocks"])
+    tpm_c    = _pick(pb, ["fg3m", "tpm", "three_pointers_made"])
     fga_c    = _pick(pb, ["field_goals_attempted", "fga"])
     fta_c    = _pick(pb, ["free_throws_attempted", "fta"])
     tov_c    = _pick(pb, ["turnovers", "tov"])
@@ -111,6 +114,9 @@ def build_features():
             player_c:"player", date_c:"game_date", teamid_c:"team_id", oppabbr_c:"opp_abbr",
             min_c:"min", pts_c:"pts", reb_c:"reb", ast_c:"ast"
         }
+        if stl_c: rename_map[stl_c] = "stl"
+        if blk_c: rename_map[blk_c] = "blk"
+        if tpm_c: rename_map[tpm_c] = "tpm"
         if fga_c: rename_map[fga_c] = "fga"
         if fta_c: rename_map[fta_c] = "fta"
         if tov_c: rename_map[tov_c] = "tov"
@@ -132,7 +138,7 @@ def build_features():
     pb["player"] = pb["player"].astype(str)
     pb["opp_abbr"] = pb["opp_abbr"].astype(str)
 
-    for c in ["min","pts","reb","ast", "fga", "fta", "tov"]:
+    for c in ["min","pts","reb","ast", "stl", "blk", "tpm", "fga", "fta", "tov"]:
         if c in pb.columns:
             pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
         else:
@@ -168,11 +174,19 @@ def build_features():
 
     pb["team_abbr"] = pb["team_id"].map(id_to_abbr).fillna("").astype(str)
 
+    # Composite stats
+    pb["pra"] = pb["pts"] + pb["reb"] + pb["ast"]
+
     # ---------- Rolling player features (no leakage) ----------
     pb = pb.sort_values(["player","game_date"])
     g = pb.groupby("player", group_keys=False)
 
-    for s in ["min","pts","reb","ast"]:
+    for s in ["min","pts","reb","ast", "pra", "stl", "blk", "tpm"]:
+        if s not in pb.columns: continue
+        # Avoid duplicate column issues if script is re-run
+        for suffix in ["_r5", "_r10", "_sd10"]:
+            if f"{s}{suffix}" in pb.columns:
+                pb = pb.drop(columns=[f"{s}{suffix}"])
         pb[f"{s}_r5"]   = g[s].shift(1).rolling(5, min_periods=1).mean()
         pb[f"{s}_r10"]  = g[s].shift(1).rolling(10, min_periods=1).mean()
         pb[f"{s}_sd10"] = g[s].shift(1).rolling(10, min_periods=2).std()
@@ -252,7 +266,9 @@ def build_features():
     })
 
     # join on game_id, exclude same team
-    m = t.merge(t2, on="game_id", how="left")
+    # Drop opp_abbr from t if it exists to avoid merge suffix confusion
+    t_for_merge = t.drop(columns=["opp_abbr"]) if "opp_abbr" in t.columns else t
+    m = t_for_merge.merge(t2, on="game_id", how="left")
     m = m[m["team_abbr"] != m["opp_abbr"]].copy()
 
     # defensive rating = opponent ORTG (same game possessions scale)
@@ -905,7 +921,7 @@ def build_features():
         "market_open_line_ast","market_open_implied_over_ast","market_open_implied_under_ast","market_book_count_ast","early_line_move_ast",
     ] + [c for c in pb.columns if c.endswith(("_r5","_r10","_sd10"))]
 
-    keep_cols = ["player","game_date","team_abbr","opp_abbr","min","pts","reb","ast"] + engineered
+    keep_cols = ["player","game_date","team_abbr","opp_abbr","min","pts","reb","ast", "pra", "stl", "blk", "tpm"] + engineered
     if "lineup_cache_timestamp" in pb.columns:
         keep_cols.append("lineup_cache_timestamp")
     out_df = safe_cols(
@@ -922,6 +938,9 @@ def build_features():
                 print(f"Column {c} is a DataFrame with columns: {out_df[c].columns.tolist()}")
             raise
     for col in ["rest_days", "b2b", "games_last_7d", "team_pace", "opp_pace", "team_drtg", "opp_drtg"]:
+        if col not in out_df.columns:
+            out_df[col] = 0.0
+    for col in ["pra", "stl", "blk", "tpm"]:
         if col not in out_df.columns:
             out_df[col] = 0.0
 
