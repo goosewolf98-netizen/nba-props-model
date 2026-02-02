@@ -31,3 +31,50 @@ Professional historical prop data is premium. To build your own archive:
 
 ### 3. Poisson Probability
 For discrete stats (REB, AST, STL, BLK, TPM), the model uses **Poisson distributions** instead of Normal approximations, ensuring sharp accuracy for low-count props.
+
+## How to Use the Model
+
+### Method 1: GitHub Actions (Recommended)
+The easiest way to use the model is through the **Actions** tab in this repository:
+1.  Go to **Actions** -> **player-query**.
+2.  Click **Run workflow**.
+3.  Enter the **Player Name**, **Stat**, and **Betting Line** (e.g., LeBron James, pts, 24.5).
+4.  The model will download the latest data, calculate "sharp" features, and output a detailed recommendation (OVER/UNDER/PASS).
+
+### Method 2: Local Execution (CLI)
+If you are running the model on your own machine:
+
+1.  **Download & Prep Data:**
+    ```bash
+    python src/download_nba_api_data.py
+    python src/feature_factory_v1.py
+    ```
+
+2.  **Train Models:** (Only needs to be done once per day)
+    ```bash
+    python src/train_backtest_baseline.py
+    ```
+
+3.  **Make a Prediction:**
+    ```bash
+    # Example: LeBron James PRA (Points+Rebounds+Assists) line of 34.5
+    python src/predict_player_prop.py --player "LeBron James" --stat pra --line 34.5
+    ```
+
+4.  **Run Full Slate (Batch):**
+    If you have an Odds API key, you can process every available prop for the day at once:
+    ```bash
+    export THE_ODDS_API_KEY='your_key_here'
+    python src/run_sharp_slate.py
+    ```
+    This will generate a `artifacts/sharp_picks_today.csv` with the best edges found across the entire league.
+
+### Supported Stats
+The model is fully trained on:
+- `pts` (Points)
+- `reb` (Rebounds)
+- `ast` (Assists)
+- `pra` (Points + Rebounds + Assists)
+- `stl` (Steals)
+- `blk` (Blocks)
+- `tpm` (Three Pointers Made)
