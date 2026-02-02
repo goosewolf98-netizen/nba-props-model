@@ -587,15 +587,29 @@ def build_features():
                 roster = roster.groupby(["game_date", "team_abbr"], as_index=False).agg(
                     roster_players=("roster_players", lambda s: sorted(set(sum(s, []))))
                 )
-                out_map = {}
+                avail_out = pd.DataFrame()
                 if not availability.empty:
                     avail_out = availability[availability["is_out"] == 1].copy()
                     avail_out["player"] = avail_out["player"].astype(str)
-                    out_map = avail_out.groupby(["game_date", "team_abbr"])["player"].apply(set).to_dict()
-                def roster_out_count(row):
-                    out_players = out_map.get((row["game_date"], row["team_abbr"]), set())
-                    return len([p for p in row["roster_players"] if p in out_players])
-                roster["roster_out_count"] = roster.apply(roster_out_count, axis=1)
+                    avail_out = avail_out.drop_duplicates(subset=["game_date", "team_abbr", "player"])
+
+                if avail_out.empty:
+                    roster["roster_out_count"] = 0
+                else:
+                    roster_exploded = roster.explode("roster_players")
+                    roster_exploded = roster_exploded.rename(columns={"roster_players": "player"})
+                    roster_exploded["player"] = roster_exploded["player"].astype(str)
+
+                    matches = roster_exploded.merge(
+                        avail_out[["game_date", "team_abbr", "player"]],
+                        on=["game_date", "team_abbr", "player"],
+                        how="inner"
+                    )
+                    out_counts = matches.groupby(["game_date", "team_abbr"]).size().reset_index(name="roster_out_count")
+
+                    roster = roster.merge(out_counts, on=["game_date", "team_abbr"], how="left")
+                    roster["roster_out_count"] = roster["roster_out_count"].fillna(0).astype(int)
+
                 roster = roster[["game_date", "team_abbr", "roster_out_count"]]
                 pb = pb.merge(roster, on=["game_date", "team_abbr"], how="left")
                 pb["starters_out_count"] = pb.get("starters_out_count", pb["roster_out_count"]).fillna(0.0)
