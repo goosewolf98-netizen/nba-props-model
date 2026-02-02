@@ -373,7 +373,7 @@ def load_with_without_impacts(team_abbr: str, player_name: str, teammates_out: l
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--player", required=True)
-    parser.add_argument("--stat", required=True, choices=["pts", "reb", "ast"])
+    parser.add_argument("--stat", required=True, choices=["pts", "reb", "ast", "pra", "stl", "blk", "tpm"])
     parser.add_argument("--line", required=True, type=float)
     args = parser.parse_args()
 
@@ -426,8 +426,29 @@ def main():
             d_rate_pm_total = impacts["d_reb_pm_total"]
         elif args.stat == "ast":
             d_rate_pm_total = impacts["d_ast_pm_total"]
+        elif args.stat == "pra":
+            d_rate_pm_total = impacts["d_pts_pm_total"] + impacts["d_reb_pm_total"] + impacts["d_ast_pm_total"]
+
+        # Sharp Usage Redistribution Logic
+        # We calculate how much the player's Usage Rate is expected to increase
+        base_usg = float(last.get("usg_r10", 15.0))
+        if base_usg < 1.0: base_usg = 15.0 # fallback
+
+        # d_usg from historical with/without analysis
+        d_usg_total = 0.0
+        for b in impacts["bumps"]:
+            d_usg_total += float(b.get("d_usg", 0.0))
+
+        # Clip usg bump to avoid crazy projections
+        d_usg_total = float(np.clip(d_usg_total, -5.0, 8.0))
+        usg_adj_factor = (base_usg + d_usg_total) / base_usg
 
         rate_pct = d_rate_pm_total / rate_pred if rate_pred > 1e-6 else 0.0
+        # Use a blend of empirical bump and theoretical usage redistribution
+        if args.stat == "pts":
+            # For points, USG redistribution is very relevant
+            rate_pct = 0.5 * rate_pct + 0.5 * (usg_adj_factor - 1.0)
+
         rate_pct = float(np.clip(rate_pct, -0.15, 0.15))
 
         minutes_base = min_pred
@@ -446,9 +467,9 @@ def main():
 
         proj = minutes_adj * rate_adj
 
-        if args.stat in ["reb", "ast"]:
-            # Sharp Poisson approach for discrete low-count stats
-            # Poisson handles the skew and discrete nature of reb/ast better than Normal
+        if args.stat in ["reb", "ast", "pra", "stl", "blk", "tpm"]:
+            # Sharp Poisson approach for discrete count stats
+            # Poisson handles the skew and discrete nature of these stats better than Normal
             p_over = float(1.0 - poisson.cdf(args.line, proj))
             p_under = float(poisson.cdf(args.line - 0.001, proj))
             rmse = math.sqrt(proj) # Poisson variance is the mean
@@ -476,7 +497,8 @@ def main():
 
         opp_def_rating_roll = float(last.get("opp_def_rating_roll", last.get("opp_drtg_roll10", 0.0)))
 
-        if availability_injury.get("status", "").upper() == "OUT" or inj.get("status") == "OUT":
+        if (availability_injury.get("status") and availability_injury.get("status").upper() == "OUT") or \
+           (inj.get("status") and inj.get("status").upper() == "OUT"):
             best_side = "NO_BET"
 
         edge = float(proj - float(args.line))
@@ -545,6 +567,8 @@ def main():
                 "minutes_role_adj": float(rotation_bump),
                 "minutes_with_without_adj": float(d_min_total),
                 "rate_pct_adj": float(rate_pct),
+                "usage_base": float(base_usg),
+                "usage_adj_delta": float(d_usg_total),
                 "shot_profile_adj": float(shot_profile_adj),
                 "role": role,
                 "bumps_applied": impacts["bumps"],

@@ -71,7 +71,7 @@ def _extract_rows(payload: object, snapshot_ts: str) -> list[dict]:
             player = market.get("PlayerName") or market.get("Player") or item.get("PlayerName")
             stat = market.get("BetName") or market.get("Market") or market.get("Stat") or ""
             stat = _normalize_stat(stat)
-            if stat not in {"pts", "reb", "ast"}:
+            if stat not in {"pts", "reb", "ast", "pra", "stl", "blk", "tpm"}:
                 continue
             line = _safe_float(market.get("Handicap") or market.get("Line") or market.get("Total"))
             over_odds = _safe_float(market.get("OverOdds") or market.get("Over") or market.get("OverPayout"))

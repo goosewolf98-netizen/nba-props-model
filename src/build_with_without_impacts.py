@@ -138,7 +138,10 @@ def main() -> None:
                 d_pts = without_stats["pts_pm"].mean() - with_stats["pts_pm"].mean()
                 d_reb = without_stats["reb_pm"].mean() - with_stats["reb_pm"].mean()
                 d_ast = without_stats["ast_pm"].mean() - with_stats["ast_pm"].mean()
-                d_usg = without_stats["usage_proxy"].mean() - with_stats["usage_proxy"].mean()
+
+                # Use usage_rate if available, fallback to usage_proxy
+                u_col = "usage_rate" if "usage_rate" in without_stats.columns else "usage_proxy"
+                d_usg = without_stats[u_col].mean() - with_stats[u_col].mean()
 
                 sample_player = team_df[team_df["player_norm"] == player_norm].iloc[0]
                 sample_teammate = team_df[team_df["player_norm"] == teammate_norm].iloc[0]

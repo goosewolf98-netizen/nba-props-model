@@ -94,6 +94,12 @@ def build_features():
     pts_c    = _pick(pb, ["points", "pts"])
     reb_c    = _pick(pb, ["rebounds", "reb", "trb"])
     ast_c    = _pick(pb, ["assists", "ast"])
+    stl_c    = _pick(pb, ["stl", "steals"])
+    blk_c    = _pick(pb, ["blk", "blocks"])
+    tpm_c    = _pick(pb, ["fg3m", "tpm", "three_pointers_made"])
+    fga_c    = _pick(pb, ["field_goals_attempted", "fga"])
+    fta_c    = _pick(pb, ["free_throws_attempted", "fta"])
+    tov_c    = _pick(pb, ["turnovers", "tov"])
 
     if any(x is None for x in [player_c, date_c, teamid_c, oppabbr_c, min_c, pts_c, reb_c, ast_c]):
         print(
@@ -101,13 +107,20 @@ def build_features():
             f"have: {list(pb.columns)[:80]}"
         )
         pb = pd.DataFrame(
-            columns=["player", "game_date", "team_id", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast"]
+            columns=["player", "game_date", "team_id", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast", "fga", "fta", "tov"]
         )
     else:
-        pb = pb.rename(columns={
+        rename_map = {
             player_c:"player", date_c:"game_date", teamid_c:"team_id", oppabbr_c:"opp_abbr",
             min_c:"min", pts_c:"pts", reb_c:"reb", ast_c:"ast"
-        }).copy()
+        }
+        if stl_c: rename_map[stl_c] = "stl"
+        if blk_c: rename_map[blk_c] = "blk"
+        if tpm_c: rename_map[tpm_c] = "tpm"
+        if fga_c: rename_map[fga_c] = "fga"
+        if fta_c: rename_map[fta_c] = "fta"
+        if tov_c: rename_map[tov_c] = "tov"
+        pb = pb.rename(columns=rename_map).copy()
 
     pb = _norm_game_date(pb)
     pb = norm_all(pb)
@@ -125,8 +138,11 @@ def build_features():
     pb["player"] = pb["player"].astype(str)
     pb["opp_abbr"] = pb["opp_abbr"].astype(str)
 
-    for c in ["min","pts","reb","ast"]:
-        pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
+    for c in ["min","pts","reb","ast", "stl", "blk", "tpm", "fga", "fta", "tov"]:
+        if c in pb.columns:
+            pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
+        else:
+            pb[c] = 0.0
 
     # map team_id -> team_abbr from team box
     tb_teamid = _pick(tb, ["team_id"])
@@ -162,7 +178,12 @@ def build_features():
     pb = pb.sort_values(["player","game_date"])
     g = pb.groupby("player", group_keys=False)
 
-    for s in ["min","pts","reb","ast"]:
+    for s in ["min","pts","reb","ast", "pra", "stl", "blk", "tpm"]:
+        if s not in pb.columns: continue
+        # Avoid duplicate column issues if script is re-run
+        for suffix in ["_r5", "_r10", "_sd10"]:
+            if f"{s}{suffix}" in pb.columns:
+                pb = pb.drop(columns=[f"{s}{suffix}"])
         pb[f"{s}_r5"]   = g[s].shift(1).rolling(5, min_periods=1).mean()
         pb[f"{s}_r10"]  = g[s].shift(1).rolling(10, min_periods=1).mean()
         pb[f"{s}_sd10"] = g[s].shift(1).rolling(10, min_periods=2).std()
@@ -192,48 +213,79 @@ def build_features():
     print("SCHED cols:", list(t.columns))
 
     # required boxscore cols for possessions estimate
-    fga = _pick(t, ["field_goals_attempted", "fga"])
-    fta = _pick(t, ["free_throws_attempted", "fta"])
-    tov = _pick(t, ["turnovers", "tov"])
-    orb = _pick(t, ["offensive_rebounds", "orb"])
-    pts = _pick(t, ["team_score", "points", "pts"])
+    fga_t = _pick(t, ["field_goals_attempted", "fga"])
+    fta_t = _pick(t, ["free_throws_attempted", "fta"])
+    tov_t = _pick(t, ["turnovers", "tov"])
+    orb_t = _pick(t, ["offensive_rebounds", "orb"])
+    pts_t = _pick(t, ["team_score", "points", "pts"])
+    min_t = _pick(t, ["team_minutes", "minutes", "min"])
 
     # safe numeric
-    for col in [fga, fta, tov, orb, pts]:
+    for col in [fga_t, fta_t, tov_t, orb_t, pts_t]:
         if col is None:
             # if any missing, we just can’t compute advanced metrics; keep zeros
             t["poss"] = 0.0
             t["ortg_raw"] = 0.0
             t["pace_raw"] = 0.0
+            t["team_fga"] = 0.0
+            t["team_fta"] = 0.0
+            t["team_tov"] = 0.0
+            t["team_min"] = 240.0
             break
     else:
-        for col in [fga, fta, tov, orb, pts]:
+        for col in [fga_t, fta_t, tov_t, orb_t, pts_t]:
             t[col] = pd.to_numeric(t[col], errors="coerce").fillna(0.0)
 
+        t["team_fga"] = t[fga_t]
+        t["team_fta"] = t[fta_t]
+        t["team_tov"] = t[tov_t]
+        if min_t:
+            t["team_min"] = pd.to_numeric(t[min_t], errors="coerce").fillna(240.0)
+        else:
+            t["team_min"] = 240.0
+
         # possessions approximation
-        t["poss"] = (t[fga] + 0.44 * t[fta] - t[orb] + t[tov]).clip(lower=0.0)
+        t["poss"] = (t[fga_t] + 0.44 * t[fta_t] - t[orb_t] + t[tov_t]).clip(lower=0.0)
         t["pace_raw"] = t["poss"]  # per-game estimate (good enough for now)
-        t["ortg_raw"] = np.where(t["poss"] > 0, (t[pts] / t["poss"]) * 100.0, 0.0)
+        t["ortg_raw"] = np.where(t["poss"] > 0, (t[pts_t] / t["poss"]) * 100.0, 0.0)
 
     # opponent join (same game_id, other team row)
+    # We want to see what stats were allowed by the team
+    stats_to_track = ["pts", "reb", "ast", "stl", "blk", "fg3m"]
+    # Check if they exist in t
+    t_cols = [c for c in stats_to_track if c in t.columns]
+
+    t2_cols = ["game_id","team_abbr","poss","ortg_raw","pace_raw"] + t_cols
     t2 = safe_cols(
         t,
-        ["game_id","team_abbr","poss","ortg_raw","pace_raw"],
-        fill_zero_cols=["poss", "ortg_raw", "pace_raw"],
+        t2_cols,
+        fill_zero_cols=["poss", "ortg_raw", "pace_raw"] + t_cols,
     ).copy()
-    t2 = t2.rename(columns={
+
+    rename_map = {
         "team_abbr":"opp_abbr",
         "poss":"opp_poss",
         "ortg_raw":"opp_ortg_raw",
         "pace_raw":"opp_pace_raw"
-    })
+    }
+    for c in t_cols:
+        rename_map[c] = f"opp_{c}_raw"
+
+    t2 = t2.rename(columns=rename_map)
 
     # join on game_id, exclude same team
-    m = t.merge(t2, on="game_id", how="left")
+    # Drop opp_abbr from t if it exists to avoid merge suffix confusion
+    t_for_merge = t.drop(columns=["opp_abbr"]) if "opp_abbr" in t.columns else t
+    m = t_for_merge.merge(t2, on="game_id", how="left")
     m = m[m["team_abbr"] != m["opp_abbr"]].copy()
 
     # defensive rating = opponent ORTG (same game possessions scale)
     m["drtg_raw"] = m["opp_ortg_raw"]
+
+    # Granular defensive stats: stats allowed per 100 possessions
+    for c in t_cols:
+        raw_col = f"opp_{c}_raw"
+        m[f"team_{c}_allowed_per100"] = np.where(m["poss"] > 0, (m[raw_col] / m["poss"]) * 100.0, 0.0)
 
     # keep one opponent row per team-game
     m = m.sort_values(["game_id","team_abbr"]).drop_duplicates(["game_id","team_abbr"])
@@ -246,25 +298,37 @@ def build_features():
     m["team_drtg_roll10"] = tg["drtg_raw"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
     m["team_pace_roll10"] = tg["pace_raw"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
 
+    for c in t_cols:
+        m[f"team_{c}_allowed_roll10"] = tg[f"team_{c}_allowed_per100"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
+
     # backwards-compatible names
     m["team_ortg"] = m["team_ortg_roll10"]
     m["team_drtg"] = m["team_drtg_roll10"]
     m["team_pace"] = m["team_pace_roll10"]
 
     # build opponent rolling tables by re-keying
+    opp_cols = ["game_date","team_abbr","team_ortg_roll10","team_drtg_roll10","team_pace_roll10"]
+    for c in t_cols:
+        opp_cols.append(f"team_{c}_allowed_roll10")
+
     opp_roll = safe_cols(
         m,
-        ["game_date","team_abbr","team_ortg_roll10","team_drtg_roll10","team_pace_roll10"],
-        fill_zero_cols=["team_ortg_roll10", "team_drtg_roll10", "team_pace_roll10"],
+        opp_cols,
+        fill_zero_cols=opp_cols[2:],
     ).copy()
     opp_roll = _norm_game_date(opp_roll)
     opp_roll = norm_all(opp_roll)
-    opp_roll = opp_roll.rename(columns={
+
+    rename_opp = {
         "team_abbr":"opp_abbr",
         "team_ortg_roll10":"opp_ortg_roll10",
         "team_drtg_roll10":"opp_drtg_roll10",
         "team_pace_roll10":"opp_pace_roll10",
-    })
+    }
+    for c in t_cols:
+        rename_opp[f"team_{c}_allowed_roll10"] = f"opp_{c}_allowed_roll10"
+
+    opp_roll = opp_roll.rename(columns=rename_opp)
 
     opp_roll["opp_ortg"] = opp_roll["opp_ortg_roll10"]
     opp_roll["opp_drtg"] = opp_roll["opp_drtg_roll10"]
@@ -317,7 +381,8 @@ def build_features():
         safe_cols(
             m,
             ["game_date","team_abbr","team_ortg","team_drtg","team_pace",
-             "team_ortg_roll10","team_drtg_roll10","team_pace_roll10"],
+             "team_ortg_roll10","team_drtg_roll10","team_pace_roll10",
+             "team_fga", "team_fta", "team_tov", "team_min"],
             fill_zero_cols=[
                 "team_ortg",
                 "team_drtg",
@@ -325,15 +390,35 @@ def build_features():
                 "team_ortg_roll10",
                 "team_drtg_roll10",
                 "team_pace_roll10",
+                "team_fga", "team_fta", "team_tov",
             ],
         ),
         on=["game_date","team_abbr"], how="left"
     )
+
+    # ---------- Usage Rate Calculation ----------
+    # Usage Formula: 100 * ((FGA + 0.44 * FTA + TOV) * (Team_MP / 5)) / (MP * (Team_FGA + 0.44 * Team_FTA + Team_TOV))
+    pb["player_stat_part"] = pb["fga"] + 0.44 * pb["fta"] + pb["tov"]
+    pb["team_stat_part"] = pb["team_fga"] + 0.44 * pb["team_fta"] + pb["team_tov"]
+
+    pb["usage_rate"] = 100 * (pb["player_stat_part"] * (pb["team_min"] / 5.0)) / (pb["min"].replace(0, pd.NA) * pb["team_stat_part"].replace(0, pd.NA))
+    pb["usage_rate"] = pb["usage_rate"].fillna(0.0).clip(0.0, 100.0)
+
+    # Rolling Usage
+    pb = pb.sort_values(["player","game_date"])
+    g_usg = pb.groupby("player", group_keys=False)
+    pb["usg_r5"] = g_usg["usage_rate"].shift(1).rolling(5, min_periods=1).mean().fillna(0.0)
+    pb["usg_r10"] = g_usg["usage_rate"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
     pb = _norm_game_date(pb)
     opp_roll = _norm_game_date(opp_roll)
     pb = norm_all(pb)
     opp_roll = norm_all(opp_roll)
     print("MERGE game_date dtypes:", pb["game_date"].dtype, opp_roll["game_date"].dtype)
+    # Avoid duplicate columns in opp_roll merge
+    for col in opp_roll.columns:
+        if col in pb.columns and col not in ["game_date", "opp_abbr"]:
+            pb = pb.drop(columns=[col])
+
     pb = pb.merge(
         opp_roll,
         on=["game_date","opp_abbr"], how="left"
@@ -356,8 +441,17 @@ def build_features():
     print("REST team_abbr present:", "team_abbr" in rest.columns)
     print("MERGE game_date dtypes:", pb["game_date"].dtype, rest["game_date"].dtype)
     if "team_abbr" in pb.columns and "team_abbr" in rest.columns:
+        # Drop columns that might already exist in pb from a previous merge attempt or raw data
+        rest_cols_to_use = ["game_date", "team_abbr", "rest_days", "b2b", "games_last_7d"]
+        rest_filtered = rest[rest_cols_to_use].drop_duplicates(["game_date", "team_abbr"])
+
+        # Ensure we don't have duplicates in pb before merging
+        for col in ["rest_days", "b2b", "games_last_7d"]:
+            if col in pb.columns:
+                pb = pb.drop(columns=[col])
+
         pb = pb.merge(
-            rest,
+            rest_filtered,
             on=["game_date","team_abbr"], how="left"
         )
         for col in ["rest_days", "b2b", "games_last_7d"]:
@@ -805,12 +899,23 @@ def build_features():
         pd.to_numeric(pb["player_on_off_net"], errors="coerce").fillna(0.0),
     )
 
+    # ---------- Professional Sharp Features ----------
+    if "MATCHUP" in pb.columns:
+        pb["is_home"] = pb["MATCHUP"].str.contains("vs.").astype(int)
+    else:
+        pb["is_home"] = 1
+
+    # Composite stats
+    pb["pra"] = pb["pts"] + pb["reb"] + pb["ast"]
+
     # fill defaults
     for c in [
         "team_ortg","team_drtg","team_pace",
         "team_ortg_roll10","team_drtg_roll10","team_pace_roll10",
         "opp_ortg","opp_drtg","opp_pace",
         "opp_ortg_roll10","opp_drtg_roll10","opp_pace_roll10",
+        "opp_pts_allowed_roll10", "opp_reb_allowed_roll10", "opp_ast_allowed_roll10",
+        "opp_stl_allowed_roll10", "opp_blk_allowed_roll10", "opp_fg3m_allowed_roll10",
         "rest_days","games_last_7d",
         "team_out_count","team_doubt_count","team_q_count","team_prob_count",
         "opp_out_count","opp_doubt_count","opp_q_count","opp_prob_count",
@@ -820,6 +925,8 @@ def build_features():
         "player_on_off_net","player_on_off_pace","player_minutes_on_recent",
         "opp_def_net_recent","top_synergy_teammate_on_flag","synergy_delta_proxy",
         "opp_def_rating_roll","opp_pace_roll","opp_reb_rate_allowed","opp_ast_rate_allowed",
+        "opp_pts_allowed_roll10", "opp_reb_allowed_roll10", "opp_ast_allowed_roll10",
+        "opp_stl_allowed_roll10", "opp_blk_allowed_roll10", "opp_fg3m_allowed_roll10",
         "market_open_line_pts","market_open_implied_over_pts","market_open_implied_under_pts","market_book_count_pts","early_line_move_pts",
         "market_open_line_reb","market_open_implied_over_reb","market_open_implied_under_reb","market_book_count_reb","early_line_move_reb",
         "market_open_line_ast","market_open_implied_over_ast","market_open_implied_under_ast","market_book_count_ast","early_line_move_ast",
@@ -834,6 +941,7 @@ def build_features():
     # output
     engineered = [
         "gp_last14",
+        "is_home",
         "team_ortg","team_drtg","team_pace",
         "team_ortg_roll10","team_drtg_roll10","team_pace_roll10",
         "opp_ortg","opp_drtg","opp_pace",
@@ -852,7 +960,7 @@ def build_features():
         "market_open_line_ast","market_open_implied_over_ast","market_open_implied_under_ast","market_book_count_ast","early_line_move_ast",
     ] + [c for c in pb.columns if c.endswith(("_r5","_r10","_sd10"))]
 
-    keep_cols = ["player","game_date","team_abbr","opp_abbr","min","pts","reb","ast"] + engineered
+    keep_cols = sorted(list(set(["player","game_date","team_abbr","opp_abbr","min","pts","reb","ast", "pra", "stl", "blk", "tpm"] + engineered)))
     if "lineup_cache_timestamp" in pb.columns:
         keep_cols.append("lineup_cache_timestamp")
     out_df = safe_cols(
@@ -861,8 +969,17 @@ def build_features():
         fill_zero_cols=engineered + ["min", "pts", "reb", "ast"],
     ).copy()
     for c in engineered + ["min","pts","reb","ast"]:
-        out_df[c] = pd.to_numeric(out_df[c], errors="coerce").fillna(0.0)
+        try:
+            out_df[c] = pd.to_numeric(out_df[c], errors="coerce").fillna(0.0)
+        except Exception as e:
+            print(f"Error on column {c}: {e}")
+            if isinstance(out_df[c], pd.DataFrame):
+                print(f"Column {c} is a DataFrame with columns: {out_df[c].columns.tolist()}")
+            raise
     for col in ["rest_days", "b2b", "games_last_7d", "team_pace", "opp_pace", "team_drtg", "opp_drtg"]:
+        if col not in out_df.columns:
+            out_df[col] = 0.0
+    for col in ["pra", "stl", "blk", "tpm"]:
         if col not in out_df.columns:
             out_df[col] = 0.0
 
