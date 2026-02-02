@@ -954,19 +954,53 @@ def build_features():
         teammate_rank = teammate_rank.sort_values(["team_abbr", "minutes_on"], ascending=[True, False])
         top_teammates = teammate_rank.groupby("team_abbr", as_index=False).head(3)
         top_map = top_teammates.groupby("team_abbr")["player"].apply(list).to_dict()
-        def teammate_flags(row):
-            team = row.get("team_abbr", "")
-            player = row.get("player", "")
-            top_list = [p for p in top_map.get(team, []) if p != player]
+        # Vectorized teammate flags calculation
+        team_stats_list = []
+        for team, top_list in top_map.items():
             out_set = out_teammates.get(team, set())
-            if not top_list:
-                return 0.0, 0.0
-            out_flag = 1.0 if any(p in out_set for p in top_list) else 0.0
-            on_flag = 1.0 if any(p not in out_set for p in top_list) else 0.0
-            return on_flag, out_flag
-        flags = pb.apply(lambda r: teammate_flags(r), axis=1, result_type="expand")
-        pb["top_synergy_teammate_on_flag"] = flags[0]
-        top_out_flag = flags[1]
+            padded_top = top_list + [None] * (3 - len(top_list))
+            p1, p2, p3 = padded_top[:3]
+
+            p1_out = p1 in out_set if p1 else False
+            p2_out = p2 in out_set if p2 else False
+            p3_out = p3 in out_set if p3 else False
+
+            team_stats_list.append({
+                "team_abbr": team,
+                "_tm_p1": p1, "_tm_p2": p2, "_tm_p3": p3,
+                "_tm_p1_out": p1_out, "_tm_p2_out": p2_out, "_tm_p3_out": p3_out,
+                "_tm_top_cnt": len(top_list),
+                "_tm_out_cnt": sum([p1_out, p2_out, p3_out])
+            })
+
+        if team_stats_list:
+            team_stats_df = pd.DataFrame(team_stats_list).set_index("team_abbr")
+            # Join to get context, preserving pb index
+            merged_context = pb[["team_abbr", "player"]].join(team_stats_df, on="team_abbr", how="left")
+
+            # Check if current player is one of the top players
+            is_p1 = (merged_context["player"] == merged_context["_tm_p1"])
+            is_p2 = (merged_context["player"] == merged_context["_tm_p2"])
+            is_p3 = (merged_context["player"] == merged_context["_tm_p3"])
+
+            # Adjust counts by removing self
+            adj_top_cnt = merged_context["_tm_top_cnt"].fillna(0) - is_p1.astype(int) - is_p2.astype(int) - is_p3.astype(int)
+
+            adj_out_cnt = merged_context["_tm_out_cnt"].fillna(0) - \
+                          (is_p1 & merged_context["_tm_p1_out"]).astype(int) - \
+                          (is_p2 & merged_context["_tm_p2_out"]).astype(int) - \
+                          (is_p3 & merged_context["_tm_p3_out"]).astype(int)
+
+            pb["top_synergy_teammate_on_flag"] = np.where(
+                (adj_top_cnt - adj_out_cnt) > 0, 1.0, 0.0
+            )
+            top_out_flag = pd.Series(
+                np.where(adj_out_cnt > 0, 1.0, 0.0),
+                index=pb.index
+            )
+        else:
+            pb["top_synergy_teammate_on_flag"] = 0.0
+            top_out_flag = pd.Series(0.0, index=pb.index)
     else:
         pb["top_synergy_teammate_on_flag"] = 0.0
         top_out_flag = pd.Series(0.0, index=pb.index)
