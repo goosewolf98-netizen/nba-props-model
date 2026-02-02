@@ -36,16 +36,18 @@ def _prob_over(proj: float, line: float, rmse: float) -> float:
     return 0.5 * (1.0 - math.erf(z / math.sqrt(2.0)))
 
 
-def _load_rmse(stat: str) -> float:
+def _load_metrics_map() -> dict[str, float]:
     metrics_path = ART_DIR / "walkforward_metrics_v2.json"
+    metrics = {}
     if metrics_path.exists():
         try:
             data = json.loads(metrics_path.read_text())
-            return float(data[stat]["overall"]["rmse"])
+            for stat, val in data.items():
+                if "overall" in val and "rmse" in val["overall"]:
+                    metrics[stat] = float(val["overall"]["rmse"])
         except Exception:
             pass
-    fallback = {"pts": 6.0, "reb": 2.2, "ast": 1.8, "pra": 8.0, "stl": 1.2, "blk": 1.2, "tpm": 1.5}
-    return fallback.get(stat, 3.0)
+    return metrics
 
 
 def run_calibration(pred_path: Path, lines_path: Path) -> dict:
@@ -113,6 +115,9 @@ def run_calibration(pred_path: Path, lines_path: Path) -> dict:
     if valid.empty:
         return write_skipped("no lines matched", "no matching prediction/line rows")
 
+    metrics_map = _load_metrics_map()
+    fallback_map = {"pts": 6.0, "reb": 2.2, "ast": 1.8, "pra": 8.0, "stl": 1.2, "blk": 1.2, "tpm": 1.5}
+
     def compute_p_over(row):
         if not pd.isna(row["p_over"]):
             return row["p_over"]
@@ -124,7 +129,7 @@ def run_calibration(pred_path: Path, lines_path: Path) -> dict:
         if stat in ["reb", "ast", "pra", "stl", "blk", "tpm"] and proj > 0:
             return float(1.0 - poisson.cdf(line, proj))
 
-        rmse = _load_rmse(stat)
+        rmse = metrics_map.get(stat, fallback_map.get(stat, 3.0))
         return _prob_over(proj, line, rmse)
 
     valid["p_over"] = valid.apply(compute_p_over, axis=1)
