@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import subprocess
 import pandas as pd
@@ -20,6 +21,64 @@ def _norm_game_date(df):
     elif "date" in df.columns:
         df["game_date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
     return df
+
+
+def _coerce_game_date(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        return df
+    if "game_date" in df.columns:
+        df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce").dt.date
+    return df
+
+
+def _ensure_opp_abbr(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        return df
+    df = ensure_col(
+        df,
+        "opp_abbr",
+        [
+            "opp_abbr",
+            "opponent_abbr",
+            "opponent_team_abbr",
+            "opp_team_abbr",
+            "opp",
+            "opponent",
+            "OPP",
+            "OPP_ABBR",
+        ],
+    )
+    if "opp_abbr" not in df.columns:
+        name_col = _pick(
+            df,
+            [
+                "opponent_team_name",
+                "opponent_name",
+                "opp_team_name",
+                "opponent",
+            ],
+        )
+        if name_col:
+            df["opp_abbr"] = (
+                df[name_col].astype(str).str.replace(r"[^A-Za-z]", "", regex=True).str[:3].str.upper()
+            )
+        else:
+            df["opp_abbr"] = pd.NA
+    return df
+
+
+def _write_empty_outputs(reason: str) -> None:
+    ART.mkdir(parents=True, exist_ok=True)
+    empty_cols = ["player", "game_date", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast"]
+    empty_df = pd.DataFrame(columns=empty_cols)
+    empty_path = ART / "features_v1.parquet"
+    empty_df.to_parquet(empty_path, index=False)
+    healthcheck = {
+        "did_write_features_parquet": True,
+        "row_counts": {"features": 0},
+        "skipped_reasons": [reason],
+    }
+    (ART / "healthcheck.json").write_text(json.dumps(healthcheck, indent=2))
 
 
 def _read_csv(name: str) -> pd.DataFrame:
@@ -47,102 +106,107 @@ def _pick(df: pd.DataFrame, options):
 
 def build_features():
     ART.mkdir(parents=True, exist_ok=True)
+    healthcheck = {
+        "did_write_features_parquet": False,
+        "row_counts": {},
+        "skipped_reasons": [],
+    }
+    pb = pd.DataFrame()
+    tb = pd.DataFrame()
+    m = pd.DataFrame()
+    out_df = pd.DataFrame()
 
     try:
-        fetch_latest_injuries(ART / "injuries_latest.csv")
-    except Exception as exc:
-        print(f"Injury ingest skipped: {exc}")
-    try:
-        ensure_lineup_cache()
-    except Exception as exc:
-        print(f"Lineup cache skipped: {exc}")
-    try:
-        subprocess.run(["python", "src/sdi_injuries.py"], check=False)
-        subprocess.run(["python", "src/build_availability_table.py"], check=False)
-        subprocess.run(["python", "src/with_without.py"], check=False)
-        subprocess.run(["python", "src/opponent_matchup.py"], check=False)
-    except Exception as exc:
-        print(f"Context builders skipped: {exc}")
+        try:
+            fetch_latest_injuries(ART / "injuries_latest.csv")
+        except Exception as exc:
+            msg = f"Injury ingest skipped: {exc}"
+            healthcheck["skipped_reasons"].append(msg)
+            print(msg)
+        try:
+            ensure_lineup_cache()
+        except Exception as exc:
+            msg = f"Lineup cache skipped: {exc}"
+            healthcheck["skipped_reasons"].append(msg)
+            print(msg)
+        try:
+            subprocess.run(["python", "src/sdi_injuries.py"], check=False)
+            subprocess.run(["python", "src/build_availability_table.py"], check=False)
+            subprocess.run(["python", "src/with_without.py"], check=False)
+            subprocess.run(["python", "src/opponent_matchup.py"], check=False)
+        except Exception as exc:
+            msg = f"Context builders skipped: {exc}"
+            healthcheck["skipped_reasons"].append(msg)
+            print(msg)
 
-    pb = _read_csv("nba_player_box.csv")
-    pb = _norm_game_date(pb)
-    pb = norm_all(pb)
-    pb = normalize_dates(pb)
-    pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
-    pb = ensure_col(pb, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
-    if "team_abbr" not in pb.columns:
-        pb["team_abbr"] = ""
-    if "opp_abbr" not in pb.columns:
-        pb["opp_abbr"] = ""
-    print("PLAYER cols:", list(pb.columns))
+        pb = _read_csv("nba_player_box.csv")
+        pb = _norm_game_date(pb)
+        pb = norm_all(pb)
+        pb = normalize_dates(pb)
+        pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
+        pb = _ensure_opp_abbr(pb)
+        if "team_abbr" not in pb.columns:
+            pb["team_abbr"] = ""
+        if "opp_abbr" not in pb.columns:
+            pb["opp_abbr"] = ""
+        print("PLAYER cols:", list(pb.columns))
 
-    tb = _read_csv("nba_team_box.csv")
-    tb = _norm_game_date(tb)
-    tb = norm_all(tb)
-    tb = normalize_dates(tb)
-    tb = ensure_col(tb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
-    tb = ensure_col(tb, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
-    print("TEAM cols:", list(tb.columns))
+        tb = _read_csv("nba_team_box.csv")
+        tb = _norm_game_date(tb)
+        tb = norm_all(tb)
+        tb = normalize_dates(tb)
+        tb = ensure_col(tb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
+        tb = _ensure_opp_abbr(tb)
+        print("TEAM cols:", list(tb.columns))
 
-    # ---------- Player box standardization ----------
-    player_c = _pick(pb, ["player", "player_name", "athlete_display_name", "name"])
-    date_c   = _pick(pb, ["game_date", "date", "start_date", "game_datetime"])
-    teamid_c = _pick(pb, ["team_id"])
-    oppabbr_c= _pick(pb, ["opponent_team_abbreviation", "opponent_abbreviation", "opp_abbr"])
+        # ---------- Player box standardization ----------
+        player_c = _pick(pb, ["player", "player_name", "athlete_display_name", "name"])
+        date_c   = _pick(pb, ["game_date", "date", "start_date", "game_datetime"])
+        teamid_c = _pick(pb, ["team_id"])
+        oppabbr_c= _pick(pb, ["opponent_team_abbreviation", "opponent_abbreviation", "opp_abbr"])
 
-    min_c    = _pick(pb, ["minutes", "min", "mp"])
-    pts_c    = _pick(pb, ["points", "pts"])
-    reb_c    = _pick(pb, ["rebounds", "reb", "trb"])
-    ast_c    = _pick(pb, ["assists", "ast"])
-    stl_c    = _pick(pb, ["stl", "steals"])
-    blk_c    = _pick(pb, ["blk", "blocks"])
-    tpm_c    = _pick(pb, ["fg3m", "tpm", "three_pointers_made"])
-    fga_c    = _pick(pb, ["field_goals_attempted", "fga"])
-    fta_c    = _pick(pb, ["free_throws_attempted", "fta"])
-    tov_c    = _pick(pb, ["turnovers", "tov"])
+        min_c    = _pick(pb, ["minutes", "min", "mp"])
+        pts_c    = _pick(pb, ["points", "pts"])
+        reb_c    = _pick(pb, ["rebounds", "reb", "trb"])
+        ast_c    = _pick(pb, ["assists", "ast"])
 
-    if any(x is None for x in [player_c, date_c, teamid_c, oppabbr_c, min_c, pts_c, reb_c, ast_c]):
-        print(
-            "Warning: nba_player_box.csv missing required columns; "
-            f"have: {list(pb.columns)[:80]}"
-        )
-        pb = pd.DataFrame(
-            columns=["player", "game_date", "team_id", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast", "fga", "fta", "tov"]
-        )
-    else:
-        rename_map = {
-            player_c:"player", date_c:"game_date", teamid_c:"team_id", oppabbr_c:"opp_abbr",
-            min_c:"min", pts_c:"pts", reb_c:"reb", ast_c:"ast"
-        }
-        if stl_c: rename_map[stl_c] = "stl"
-        if blk_c: rename_map[blk_c] = "blk"
-        if tpm_c: rename_map[tpm_c] = "tpm"
-        if fga_c: rename_map[fga_c] = "fga"
-        if fta_c: rename_map[fta_c] = "fta"
-        if tov_c: rename_map[tov_c] = "tov"
-        pb = pb.rename(columns=rename_map).copy()
-
-    pb = _norm_game_date(pb)
-    pb = norm_all(pb)
-    pb = normalize_dates(pb)
-    pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
-    pb = ensure_col(pb, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
-    if any(c not in pb.columns for c in ["game_date", "player"]):
-        print("Warning: player_df missing required columns; writing zeros.")
-        pb = pd.DataFrame(
-            columns=["player", "game_date", "team_id", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast"]
-        )
-
-    pb = _norm_game_date(pb)
-    pb = pb.dropna(subset=["game_date"])
-    pb["player"] = pb["player"].astype(str)
-    pb["opp_abbr"] = pb["opp_abbr"].astype(str)
-
-    for c in ["min","pts","reb","ast", "stl", "blk", "tpm", "fga", "fta", "tov"]:
-        if c in pb.columns:
-            pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
+        if any(x is None for x in [player_c, date_c, teamid_c, oppabbr_c, min_c, pts_c, reb_c, ast_c]):
+            print(
+                "Warning: nba_player_box.csv missing required columns; "
+                f"have: {list(pb.columns)[:80]}"
+            )
+            pb = pd.DataFrame(
+                columns=["player", "game_date", "team_id", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast"]
+            )
         else:
-            pb[c] = 0.0
+            pb = pb.rename(columns={
+                player_c:"player", date_c:"game_date", teamid_c:"team_id", oppabbr_c:"opp_abbr",
+                min_c:"min", pts_c:"pts", reb_c:"reb", ast_c:"ast"
+            }).copy()
+
+        pb = _norm_game_date(pb)
+        pb = norm_all(pb)
+        pb = normalize_dates(pb)
+        pb = ensure_col(pb, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
+        pb = _ensure_opp_abbr(pb)
+        if any(c not in pb.columns for c in ["game_date", "player"]):
+            print("Warning: player_df missing required columns; writing zeros.")
+            pb = pd.DataFrame(
+                columns=["player", "game_date", "team_id", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast"]
+            )
+
+        pb["game_date"] = pd.to_datetime(pb["game_date"], errors="coerce").dt.date
+        pb = pb.dropna(subset=["game_date"])
+        pb["player"] = pb["player"].astype(str)
+        pb["opp_abbr"] = pb["opp_abbr"].astype(str)
+
+        for c in ["min","pts","reb","ast"]:
+            pb[c] = pd.to_numeric(pb[c], errors="coerce").fillna(0.0)
+    except Exception as exc:
+        healthcheck["skipped_reasons"].append(f"feature_factory_failed: {exc}")
+        pb = pd.DataFrame(
+            columns=["player", "game_date", "team_abbr", "opp_abbr", "min", "pts", "reb", "ast"]
+        )
 
     # map team_id -> team_abbr from team box
     tb_teamid = _pick(tb, ["team_id"])
@@ -172,6 +236,8 @@ def build_features():
     else:
         id_to_abbr = {}
 
+    if "team_id" not in pb.columns:
+        pb["team_id"] = pd.NA
     pb["team_abbr"] = pb["team_id"].map(id_to_abbr).fillna("").astype(str)
 
     # ---------- Rolling player features (no leakage) ----------
@@ -274,10 +340,11 @@ def build_features():
     t2 = t2.rename(columns=rename_map)
 
     # join on game_id, exclude same team
-    # Drop opp_abbr from t if it exists to avoid merge suffix confusion
-    t_for_merge = t.drop(columns=["opp_abbr"]) if "opp_abbr" in t.columns else t
-    m = t_for_merge.merge(t2, on="game_id", how="left")
-    m = m[m["team_abbr"] != m["opp_abbr"]].copy()
+    m = t.merge(t2, on="game_id", how="left")
+    if "opp_abbr" in m.columns and m["opp_abbr"].notna().any():
+        m = m[m["team_abbr"] != m["opp_abbr"]].copy()
+    else:
+        print("Skipping team/opponent filter; opp_abbr missing.")
 
     # defensive rating = opponent ORTG (same game possessions scale)
     m["drtg_raw"] = m["opp_ortg_raw"]
@@ -316,7 +383,7 @@ def build_features():
         opp_cols,
         fill_zero_cols=opp_cols[2:],
     ).copy()
-    opp_roll = _norm_game_date(opp_roll)
+    opp_roll = _coerce_game_date(opp_roll)
     opp_roll = norm_all(opp_roll)
 
     rename_opp = {
@@ -335,14 +402,14 @@ def build_features():
     opp_roll["opp_pace"] = opp_roll["opp_pace_roll10"]
 
     # ---------- Rest / B2B from team schedule (by team_abbr) ----------
-    rest = _norm_game_date(m)
+    rest = _coerce_game_date(m)
     rest = norm_all(m)
     rest = normalize_dates(rest)
     rest = ensure_col(rest, "team_abbr", ["team_abbreviation", "team", "abbr", "TEAM", "TEAM_ABBR", "TeamAbbr"])
-    rest = ensure_col(rest, "opp_abbr", ["opp_abbreviation", "opp", "opponent", "OPP", "OPP_ABBR", "OpponentAbbr"])
+    rest = _ensure_opp_abbr(rest)
     print("rest_df columns:", list(rest.columns))
     rest = safe_cols(rest, ["game_date", "team_abbr"])
-    rest = _norm_game_date(rest)
+    rest["game_date"] = pd.to_datetime(rest["game_date"], errors="coerce").dt.date
     if any(c not in rest.columns for c in ["game_date", "team_abbr"]) or not rest["team_abbr"].notna().any():
         print("Warning: rest_df missing required columns; writing zeros.")
         rest = pd.DataFrame(columns=["game_date","team_abbr","rest_days","b2b","games_last_7d"])
@@ -372,10 +439,12 @@ def build_features():
     rest["team_abbr"] = rest["team_abbr"].astype(str)
 
     # ---------- Merge team context into player rows ----------
-    pb = _norm_game_date(pb)
-    m = _norm_game_date(m)
+    pb = _coerce_game_date(pb)
+    m = _coerce_game_date(m)
     pb = norm_all(pb)
     m = norm_all(m)
+    pb = _coerce_game_date(pb)
+    m = _coerce_game_date(m)
     print("MERGE game_date dtypes:", pb["game_date"].dtype, m["game_date"].dtype)
     pb = pb.merge(
         safe_cols(
@@ -395,24 +464,14 @@ def build_features():
         ),
         on=["game_date","team_abbr"], how="left"
     )
-
-    # ---------- Usage Rate Calculation ----------
-    # Usage Formula: 100 * ((FGA + 0.44 * FTA + TOV) * (Team_MP / 5)) / (MP * (Team_FGA + 0.44 * Team_FTA + Team_TOV))
-    pb["player_stat_part"] = pb["fga"] + 0.44 * pb["fta"] + pb["tov"]
-    pb["team_stat_part"] = pb["team_fga"] + 0.44 * pb["team_fta"] + pb["team_tov"]
-
-    pb["usage_rate"] = 100 * (pb["player_stat_part"] * (pb["team_min"] / 5.0)) / (pb["min"].replace(0, pd.NA) * pb["team_stat_part"].replace(0, pd.NA))
-    pb["usage_rate"] = pb["usage_rate"].fillna(0.0).clip(0.0, 100.0)
-
-    # Rolling Usage
-    pb = pb.sort_values(["player","game_date"])
-    g_usg = pb.groupby("player", group_keys=False)
-    pb["usg_r5"] = g_usg["usage_rate"].shift(1).rolling(5, min_periods=1).mean().fillna(0.0)
-    pb["usg_r10"] = g_usg["usage_rate"].shift(1).rolling(10, min_periods=1).mean().fillna(0.0)
-    pb = _norm_game_date(pb)
-    opp_roll = _norm_game_date(opp_roll)
+    pb = _coerce_game_date(pb)
+    opp_roll = _coerce_game_date(opp_roll)
     pb = norm_all(pb)
     opp_roll = norm_all(opp_roll)
+    pb = _coerce_game_date(pb)
+    opp_roll = _coerce_game_date(opp_roll)
+    if "game_date" in opp_roll.columns:
+        opp_roll["game_date"] = pd.to_datetime(opp_roll["game_date"], errors="coerce").dt.date
     print("MERGE game_date dtypes:", pb["game_date"].dtype, opp_roll["game_date"].dtype)
     # Avoid duplicate columns in opp_roll merge
     for col in opp_roll.columns:
@@ -439,6 +498,8 @@ def build_features():
             rest[c] = rest[c].fillna(0)
     print("REST COLS:", list(rest.columns))
     print("REST team_abbr present:", "team_abbr" in rest.columns)
+    pb = _coerce_game_date(pb)
+    rest = _coerce_game_date(rest)
     print("MERGE game_date dtypes:", pb["game_date"].dtype, rest["game_date"].dtype)
     if "team_abbr" in pb.columns and "team_abbr" in rest.columns:
         # Drop columns that might already exist in pb from a previous merge attempt or raw data
@@ -477,7 +538,7 @@ def build_features():
         for col in ["game_date", "team_abbr", "player", "is_out", "is_doubt", "is_q", "is_prob", "is_active"]:
             if col not in availability.columns:
                 availability[col] = 0 if col.startswith("is_") else ""
-        availability["game_date"] = pd.to_datetime(availability["game_date"], errors="coerce").dt.date.astype(str)
+        availability["game_date"] = pd.to_datetime(availability["game_date"], errors="coerce").dt.date
         availability["team_abbr"] = availability["team_abbr"].astype(str)
         team_avail = availability.groupby(["game_date", "team_abbr"], as_index=False).agg(
             team_out_count=("is_out", "sum"),
@@ -492,7 +553,7 @@ def build_features():
             "team_q_count": "opp_q_count",
             "team_prob_count": "opp_prob_count",
         })
-        pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+        pb["game_date_key"] = pd.to_datetime(pb["game_date"], errors="coerce").dt.date
         pb = pb.merge(team_avail, left_on=["game_date_key", "team_abbr"], right_on=["game_date", "team_abbr"], how="left")
         pb = pb.merge(opp_avail, left_on=["game_date_key", "opp_abbr"], right_on=["game_date", "opp_abbr"], how="left")
         pb = pb.drop(columns=["game_date_key", "game_date_x", "game_date_y"], errors="ignore")
@@ -514,6 +575,7 @@ def build_features():
             pbp_lineups = pd.DataFrame()
         if not pbp_lineups.empty:
             pbp_lineups = norm_all(pbp_lineups)
+            pbp_lineups["game_date"] = pd.to_datetime(pbp_lineups["game_date"], errors="coerce").dt.date
             roster_cols = [c for c in pbp_lineups.columns if c.startswith("player_on_")]
             if roster_cols and "team_abbr" in pbp_lineups.columns:
                 roster = pbp_lineups[["game_date", "team_abbr"] + roster_cols].copy()
@@ -548,7 +610,7 @@ def build_features():
             kaggle_lineups = pd.DataFrame()
         if not kaggle_lineups.empty:
             kaggle_lineups = norm_all(kaggle_lineups)
-            kaggle_lineups["game_date"] = pd.to_datetime(kaggle_lineups["game_date"], errors="coerce").dt.date.astype(str)
+            kaggle_lineups["game_date"] = pd.to_datetime(kaggle_lineups["game_date"], errors="coerce").dt.date
             lineup_id_cols = [c for c in kaggle_lineups.columns if c.startswith("lineup") or c.startswith("player")]
             group_cols = ["game_date", "team_abbr"]
             lineup_count_cols = [c for c in lineup_id_cols if c not in {"game_date", "team_abbr"}]
@@ -558,7 +620,7 @@ def build_features():
                 kaggle_lineup_count=(lineup_count_cols[0] if lineup_count_cols else "team_abbr", "nunique"),
             )
             agg = agg.rename(columns={"game_date": "game_date_key"})
-            pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+            pb["game_date_key"] = pd.to_datetime(pb["game_date"], errors="coerce").dt.date
             pb = pb.merge(
                 agg,
                 on=["game_date_key", "team_abbr"],
@@ -574,6 +636,7 @@ def build_features():
             with_without = pd.DataFrame()
         if not with_without.empty:
             with_without = norm_all(with_without)
+            with_without["game_date"] = pd.to_datetime(with_without["game_date"], errors="coerce").dt.date
             for col in ["game_date", "team_abbr", "player"]:
                 if col not in with_without.columns:
                     with_without[col] = ""
@@ -591,6 +654,7 @@ def build_features():
             opp_match = pd.DataFrame()
         if not opp_match.empty:
             opp_match = norm_all(opp_match)
+            opp_match["game_date"] = pd.to_datetime(opp_match["game_date"], errors="coerce").dt.date
             for col in ["game_date", "opp_abbr"]:
                 if col not in opp_match.columns:
                     opp_match[col] = ""
@@ -643,9 +707,9 @@ def build_features():
                     "three_fg_pct_10g",
                 ]
             ].copy()
-            shots_features["game_date"] = shots_features["game_date"].dt.date.astype(str)
+            shots_features["game_date"] = shots_features["game_date"].dt.date
             pb["player_norm"] = pb["player"].astype(str).str.lower().str.split().str.join(" ")
-            pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+            pb["game_date_key"] = pd.to_datetime(pb["game_date"], errors="coerce").dt.date
             pb = pb.merge(
                 shots_features,
                 left_on=["game_date_key", "player_norm"],
@@ -662,7 +726,7 @@ def build_features():
         except Exception:
             kaggle_lines = pd.DataFrame()
         if not kaggle_lines.empty:
-            kaggle_lines["game_date"] = pd.to_datetime(kaggle_lines["game_date"], errors="coerce").dt.date.astype(str)
+            kaggle_lines["game_date"] = pd.to_datetime(kaggle_lines["game_date"], errors="coerce").dt.date
             for col in ["spread_close", "total_close"]:
                 if col not in kaggle_lines.columns:
                     kaggle_lines[col] = pd.NA
@@ -689,7 +753,7 @@ def build_features():
                 total_close=("total_close", "mean"),
             )
             team_lines = team_lines.rename(columns={"game_date": "game_date_key"})
-            pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+            pb["game_date_key"] = pd.to_datetime(pb["game_date"], errors="coerce").dt.date
             pb = pb.merge(
                 team_lines,
                 on=["game_date_key", "team_abbr", "opp_abbr"],
@@ -714,7 +778,7 @@ def build_features():
             for col in ["game_date", "player", "stat", "open_line", "open_over_odds", "open_under_odds", "book", "open_ts"]:
                 if col not in line_moves.columns:
                     line_moves[col] = pd.NA
-            line_moves["game_date"] = pd.to_datetime(line_moves["game_date"], errors="coerce").dt.date.astype(str)
+            line_moves["game_date"] = pd.to_datetime(line_moves["game_date"], errors="coerce").dt.date
             line_moves["player_norm"] = line_moves["player"].astype(str).str.lower().str.split().str.join(" ")
             line_moves["stat_norm"] = line_moves["stat"].astype(str).str.lower()
             line_moves["open_line"] = pd.to_numeric(line_moves["open_line"], errors="coerce")
@@ -743,7 +807,7 @@ def build_features():
                 early_line_move=("early_line_move", "mean"),
             )
             pb["player_norm"] = pb["player"].astype(str).str.lower().str.split().str.join(" ")
-            pb["game_date_key"] = pb["game_date"].dt.date.astype(str)
+            pb["game_date_key"] = pd.to_datetime(pb["game_date"], errors="coerce").dt.date
             for stat in ["pts", "reb", "ast"]:
                 stat_rows = agg[agg["stat_norm"] == stat].copy()
                 if stat_rows.empty:
@@ -1008,10 +1072,24 @@ def build_features():
     out = ART / "features_v1.parquet"
     out_df.to_parquet(out, index=False)
     print("Saved features:", out, "rows", len(out_df), "cols", out_df.shape[1])
+    healthcheck["did_write_features_parquet"] = True
+    healthcheck["row_counts"] = {
+        "player_box": int(len(pb)),
+        "team_box": int(len(tb)),
+        "team_context": int(len(m)) if "m" in locals() else 0,
+        "features": int(len(out_df)),
+    }
+    healthcheck_path = ART / "healthcheck.json"
+    healthcheck_path.write_text(json.dumps(healthcheck, indent=2))
+    print("Saved healthcheck:", healthcheck_path)
     if "rest_days" in out_df.columns:
         print("features_v1 rows:", len(out_df), "nonzero rest_days:", float((out_df["rest_days"] > 0).mean()))
     else:
         print("features_v1 rows:", len(out_df), "nonzero rest_days: 0.0")
 
 if __name__ == "__main__":
-    build_features()
+    try:
+        build_features()
+    except Exception as exc:
+        _write_empty_outputs(f"feature_factory_failed: {exc}")
+        print(f"Feature factory failed safely: {exc}")

@@ -9,6 +9,13 @@ from schema_normalize import norm_all, norm_minutes
 RAW_PLAYER = Path("data/raw/nba_player_box.csv")
 AVAIL_PATH = Path("data/injuries/availability_by_game.csv")
 OUT_PATH = Path("artifacts/with_without_features.parquet")
+ERROR_PATH = Path("artifacts/player_pick_error.txt")
+
+
+def _write_error(msg: str) -> None:
+    ERROR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ERROR_PATH.write_text(msg)
+    print(msg)
 
 
 def _load_player_box() -> pd.DataFrame:
@@ -45,6 +52,7 @@ def main():
             "top_ast_teammates_out_count",
             "top_reb_teammates_out_count",
         ]).to_parquet(OUT_PATH, index=False)
+        _write_error("with_without: missing player box data")
         print("Player box missing; wrote empty with/without features.")
         return
 
@@ -64,6 +72,17 @@ def main():
         pb = norm_all(pb)
     pb["team_abbr"] = pb["team_abbr"].astype(str)
     pb["game_date"] = pb["game_date"].astype(str)
+    if not pb["team_abbr"].str.strip().any():
+        empty = pd.DataFrame(columns=[
+            "game_date", "team_abbr", "player",
+            "starters_out_count", "rotation_out_count",
+            "top_usage_teammates_out_count",
+            "top_ast_teammates_out_count",
+            "top_reb_teammates_out_count",
+        ])
+        empty.to_parquet(OUT_PATH, index=False)
+        _write_error("with_without: missing team_abbr in player box data")
+        return
 
     avail = _load_availability()
     if avail.empty:
@@ -78,59 +97,58 @@ def main():
         reb=("reb", "mean") if "reb" in pb.columns else ("min", "mean"),
         ast=("ast", "mean") if "ast" in pb.columns else ("min", "mean"),
     )
-    top_usage = team_usage.sort_values(["team_abbr", "pts"], ascending=[True, False]).groupby("team_abbr").head(3)
-    top_ast = team_usage.sort_values(["team_abbr", "ast"], ascending=[True, False]).groupby("team_abbr").head(3)
-    top_reb = team_usage.sort_values(["team_abbr", "reb"], ascending=[True, False]).groupby("team_abbr").head(3)
+    if team_usage.empty or "team_abbr" not in team_usage.columns:
+        empty = pd.DataFrame(columns=[
+            "game_date", "team_abbr", "player",
+            "starters_out_count", "rotation_out_count",
+            "top_usage_teammates_out_count",
+            "top_ast_teammates_out_count",
+            "top_reb_teammates_out_count",
+        ])
+        empty.to_parquet(OUT_PATH, index=False)
+        _write_error("with_without: missing team usage data")
+        return
 
-    avail_out = avail[avail["is_out"] == 1].copy()
+    top_usage = team_usage.groupby("team_abbr").apply(
+        lambda g: g.sort_values("pts", ascending=False).head(3)
+    ).reset_index(drop=True)
+    top_ast = team_usage.groupby("team_abbr").apply(
+        lambda g: g.sort_values("ast", ascending=False).head(3)
+    ).reset_index(drop=True)
+    top_reb = team_usage.groupby("team_abbr").apply(
+        lambda g: g.sort_values("reb", ascending=False).head(3)
+    ).reset_index(drop=True)
 
-    # 1. Starters/Rotation out count
-    out_counts = avail_out.groupby(["team_abbr", "game_date"]).size().reset_index(name="out_count")
+    top_usage_map = top_usage.groupby("team_abbr")["player"].apply(list).to_dict()
+    top_ast_map = top_ast.groupby("team_abbr")["player"].apply(list).to_dict()
+    top_reb_map = top_reb.groupby("team_abbr")["player"].apply(list).to_dict()
 
-    # 2. Top Usage/Ast/Reb Out helper
-    def get_top_out_counts(top_df, col_name_base):
-        top_out = avail_out.merge(top_df[["team_abbr", "player"]], on=["team_abbr", "player"], how="inner")
-        top_out_counts = top_out.groupby(["team_abbr", "game_date"]).size().reset_index(name=f"{col_name_base}_base")
-        top_out["is_in_top"] = 1
-        return top_out_counts, top_out[["team_abbr", "game_date", "player", "is_in_top"]]
+    out_rows = []
+    for _, row in pb.iterrows():
+        team = row.get("team_abbr", "")
+        game_date = row.get("game_date", "")
+        player = row.get("player", "")
+        out_df = avail[(avail["team_abbr"] == team) & (avail["game_date"] == game_date) & (avail["is_out"] == 1)]
+        out_players = set(out_df["player"].astype(str).tolist())
 
-    usage_counts, usage_details = get_top_out_counts(top_usage, "top_usage_out")
-    ast_counts, ast_details = get_top_out_counts(top_ast, "top_ast_out")
-    reb_counts, reb_details = get_top_out_counts(top_reb, "top_reb_out")
+        starters_out = len(out_players)
+        rotation_out = len(out_players)
+        top_usage_out = len([p for p in top_usage_map.get(team, []) if p in out_players and p != player])
+        top_ast_out = len([p for p in top_ast_map.get(team, []) if p in out_players and p != player])
+        top_reb_out = len([p for p in top_reb_map.get(team, []) if p in out_players and p != player])
 
-    # Merge everything into pb
-    out_df = pb.copy()
+        out_rows.append({
+            "game_date": game_date,
+            "team_abbr": team,
+            "player": player,
+            "starters_out_count": starters_out,
+            "rotation_out_count": rotation_out,
+            "top_usage_teammates_out_count": top_usage_out,
+            "top_ast_teammates_out_count": top_ast_out,
+            "top_reb_teammates_out_count": top_reb_out,
+        })
 
-    out_df = out_df.merge(out_counts, on=["team_abbr", "game_date"], how="left")
-    out_df["starters_out_count"] = out_df["out_count"].fillna(0).astype(int)
-    out_df["rotation_out_count"] = out_df["starters_out_count"]
-
-    # Merge top usage
-    out_df = out_df.merge(usage_counts, on=["team_abbr", "game_date"], how="left")
-    out_df = out_df.merge(usage_details.rename(columns={"is_in_top": "is_usage_out"}),
-                  on=["team_abbr", "game_date", "player"], how="left")
-    out_df["top_usage_teammates_out_count"] = (out_df["top_usage_out_base"].fillna(0) - out_df["is_usage_out"].fillna(0)).astype(int)
-
-    # Merge top ast
-    out_df = out_df.merge(ast_counts, on=["team_abbr", "game_date"], how="left")
-    out_df = out_df.merge(ast_details.rename(columns={"is_in_top": "is_ast_out"}),
-                  on=["team_abbr", "game_date", "player"], how="left")
-    out_df["top_ast_teammates_out_count"] = (out_df["top_ast_out_base"].fillna(0) - out_df["is_ast_out"].fillna(0)).astype(int)
-
-    # Merge top reb
-    out_df = out_df.merge(reb_counts, on=["team_abbr", "game_date"], how="left")
-    out_df = out_df.merge(reb_details.rename(columns={"is_in_top": "is_reb_out"}),
-                  on=["team_abbr", "game_date", "player"], how="left")
-    out_df["top_reb_teammates_out_count"] = (out_df["top_reb_out_base"].fillna(0) - out_df["is_reb_out"].fillna(0)).astype(int)
-
-    final_cols = [
-        "game_date", "team_abbr", "player",
-        "starters_out_count", "rotation_out_count",
-        "top_usage_teammates_out_count",
-        "top_ast_teammates_out_count",
-        "top_reb_teammates_out_count",
-    ]
-    out_df = out_df[final_cols]
+    out_df = pd.DataFrame(out_rows)
     out_df = out_df.drop_duplicates(subset=["game_date", "team_abbr", "player"])
     out_df.to_parquet(OUT_PATH, index=False)
     print("Saved with/without features to", OUT_PATH)
