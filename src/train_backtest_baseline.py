@@ -52,17 +52,17 @@ def _fit_xgb(X_train, y_train):
 def _make_rate_targets(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     mins = out["min"].clip(lower=1.0)
-    out["pts_rate"] = out["pts"] / mins
-    out["reb_rate"] = out["reb"] / mins
-    out["ast_rate"] = out["ast"] / mins
+    for stat in ["pts", "reb", "ast", "pra", "stl", "blk", "tpm"]:
+        if stat in out.columns:
+            out[f"{stat}_rate"] = out[stat] / mins
     return out
 
 
 def _get_feature_cols(df: pd.DataFrame) -> list[str]:
     drop = {
         "player", "team", "opp", "team_abbr", "opp_abbr",
-        "game_date", "pts", "reb", "ast", "min",
-        "pts_rate", "reb_rate", "ast_rate",
+        "game_date", "pts", "reb", "ast", "pra", "stl", "blk", "tpm", "min",
+        "pts_rate", "reb_rate", "ast_rate", "pra_rate", "stl_rate", "blk_rate", "tpm_rate",
     }
     cols = []
     use_market = os.getenv("USE_MARKET_FEATURES", "0") == "1"
@@ -217,8 +217,8 @@ def walk_forward_v2(df: pd.DataFrame, stat: str, feature_cols: list[str]):
         out["y_pred"] = proj
         out["projection"] = proj
         out["actual"] = y_true
-        out["p_over"] = 0.5
-        out["p_under"] = 0.5
+        out["p_over"] = np.nan
+        out["p_under"] = np.nan
         out["train_end"] = train_end
         preds_all.append(out)
 
@@ -252,8 +252,9 @@ if __name__ == "__main__":
     df = df.dropna(subset=["game_date"]).copy()
 
     # numeric coercions
-    for c in ["min", "pts", "reb", "ast"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for c in ["min", "pts", "reb", "ast", "pra", "stl", "blk", "tpm"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
     df = _make_rate_targets(df)
     feature_cols = _get_feature_cols(df)
@@ -269,7 +270,8 @@ if __name__ == "__main__":
     }}
 
     # Evaluate each stat using minutes×rate projection
-    for stat in ["pts", "reb", "ast"]:
+    for stat in ["pts", "reb", "ast", "pra", "stl", "blk", "tpm"]:
+        if stat not in test_df.columns: continue
         _, _, min_pred, rate_pred, proj = _predict_minutes_rate_projection(train_df, test_df, stat, feature_cols)
         back_v2[stat] = {
             "rmse": _rmse(test_df[stat].values, proj),
@@ -290,7 +292,8 @@ if __name__ == "__main__":
         for feature, importance in zip(feature_cols, m_model.feature_importances_):
             importance_rows.append({"model": "min", "feature": feature, "importance": float(importance)})
 
-    for stat in ["pts", "reb", "ast"]:
+    for stat in ["pts", "reb", "ast", "pra", "stl", "blk", "tpm"]:
+        if stat not in df.columns: continue
         rate_col = f"{stat}_rate"
         rate_df = df[df["min"] >= MIN_MINUTES_FOR_RATE_TRAIN]
         if len(rate_df) < 200:
@@ -326,7 +329,8 @@ if __name__ == "__main__":
     wf_preds_all = []
     wf_slices = {}
     try:
-        for stat in ["pts", "reb", "ast"]:
+        for stat in ["pts", "reb", "ast", "pra", "stl", "blk", "tpm"]:
+            if stat not in df.columns: continue
             wf_metrics, wf_preds = walk_forward_v2(df, stat, feature_cols)
             if isinstance(wf_metrics, dict) and "overall" in wf_metrics and len(wf_preds) > 0:
                 wf_metrics["availability_slices"] = _availability_slices(wf_preds)
@@ -351,12 +355,12 @@ if __name__ == "__main__":
         preds_out = pd.concat(wf_preds_all, ignore_index=True)
         for col in required_cols:
             if col not in preds_out.columns:
-                preds_out[col] = 0.5 if col in ["p_over", "p_under"] else pd.NA
+                preds_out[col] = np.nan if col in ["p_over", "p_under"] else pd.NA
         preds_out.to_csv(pred_path, index=False)
     else:
         empty = pd.DataFrame(columns=required_cols)
-        empty["p_over"] = 0.5
-        empty["p_under"] = 0.5
+        empty["p_over"] = np.nan
+        empty["p_under"] = np.nan
         empty.to_csv(pred_path, index=False)
     try:
         subprocess.check_call([sys.executable, "src/sdi_props_lines.py"])
@@ -388,8 +392,8 @@ if __name__ == "__main__":
         required_cols = ["game_date", "player", "stat", "projection", "p_over", "p_under", "actual"]
         if not wf_pred_path.exists():
             empty = pd.DataFrame(columns=required_cols)
-            empty["p_over"] = 0.5
-            empty["p_under"] = 0.5
+            empty["p_over"] = np.nan
+            empty["p_under"] = np.nan
             empty.to_csv(wf_pred_path, index=False)
         if not wf_metrics_path.exists():
             wf_metrics_path.write_text(json.dumps({"status": "placeholder"}, indent=2))

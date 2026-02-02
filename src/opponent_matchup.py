@@ -54,6 +54,8 @@ def main():
     tb["game_date"] = pd.to_datetime(tb["game_date"], errors="coerce")
     tb = tb.dropna(subset=["game_date"])
     tb = tb.sort_values(["team_abbr", "game_date"])
+    tb["game_date_dt"] = tb["game_date"] # keep dt for rolling/sorting if needed
+    tb["game_date"] = tb["game_date"].dt.date.astype(str)
 
     fga = next((c for c in ["field_goals_attempted", "fga"] if c in tb.columns), None)
     fta = next((c for c in ["free_throws_attempted", "fta"] if c in tb.columns), None)
@@ -80,8 +82,12 @@ def main():
 
     opp_roll = tb[["game_date", "team_abbr", "opp_def_rating_roll", "opp_pace_roll"]].copy()
     opp_roll = opp_roll.rename(columns={"team_abbr": "opp_abbr"})
+    opp_roll["game_date"] = opp_roll["game_date"].astype(str)
+    opp_roll["opp_abbr"] = opp_roll["opp_abbr"].astype(str)
 
     pb = norm_all(pb)
+    pb["game_date"] = pb["game_date"].astype(str)
+    pb["opp_abbr"] = pb["opp_abbr"].astype(str)
     pb = pb.reindex(columns=["game_date", "opp_abbr"])
     pb = pb.dropna(subset=["game_date"]).drop_duplicates()
     merged = pb.merge(opp_roll, on=["game_date", "opp_abbr"], how="left")

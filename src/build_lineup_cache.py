@@ -73,7 +73,7 @@ def build_lineup_cache(days: int = 60, season: str | None = None) -> None:
         return
 
     try:
-        settings = {"Games": {"Season": season or "2024-25"}}
+        settings = {"Games": {"Season": season or "2025-26"}}
         client = Client(settings)
         _ = client  # placeholder for future pbpstats extraction
         _write_empty_cache(cache_timestamp)
