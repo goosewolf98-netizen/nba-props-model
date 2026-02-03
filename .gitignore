@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data/nba.db
+data/raw/
+tests/test_nba.db
+artifacts/

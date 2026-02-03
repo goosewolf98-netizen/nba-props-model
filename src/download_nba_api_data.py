@@ -2,6 +2,12 @@ from nba_api.stats.endpoints import leaguegamelog
 import pandas as pd
 from pathlib import Path
 import time
+import sys
+import os
+
+# Add src to path to import db manager
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.db.manager import DBManager
 
 def download_data():
     RAW_DIR = Path("data/raw")
@@ -40,10 +46,26 @@ def download_data():
         df_all_p.to_csv(RAW_DIR / "nba_player_box.csv", index=False)
         print(f"Saved total {len(df_all_p)} player boxscores.")
 
+        # Upsert to DB
+        print("Upserting player boxscores to database...")
+        try:
+            db = DBManager()
+            db.upsert_boxscores(df_all_p)
+        except Exception as e:
+            print(f"Error updating database: {e}")
+
     if all_t:
         df_all_t = pd.concat(all_t, ignore_index=True)
         df_all_t.to_csv(RAW_DIR / "nba_team_box.csv", index=False)
         print(f"Saved total {len(df_all_t)} team boxscores.")
+
+        # Upsert to DB
+        print("Upserting team boxscores to database...")
+        try:
+            db = DBManager()
+            db.upsert_team_boxscores(df_all_t)
+        except Exception as e:
+            print(f"Error updating database: {e}")
 
 if __name__ == "__main__":
     download_data()

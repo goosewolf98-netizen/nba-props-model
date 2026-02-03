@@ -4,6 +4,7 @@ import os
 import subprocess
 import pandas as pd
 import numpy as np
+import sqlite3
 
 from availability_features import add_availability_features
 from build_lineup_cache import ensure_lineup_cache
@@ -82,6 +83,29 @@ def _write_empty_outputs(reason: str) -> None:
 
 
 def _read_csv(name: str) -> pd.DataFrame:
+    # Attempt to load from DB first
+    db_path = Path("data/nba.db")
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(db_path)
+            table_map = {
+                "nba_player_box.csv": "boxscores",
+                "nba_team_box.csv": "team_boxscores"
+            }
+            if name in table_map:
+                table = table_map[name]
+                print(f"Loading {table} from {db_path}...")
+                df = pd.read_sql(f"SELECT * FROM {table}", conn)
+                conn.close()
+                if not df.empty:
+                    # DB columns are lowercase. Feature factory handles this via _pick,
+                    # but ensure we have at least what we need.
+                    # DB: player_name, team_abbreviation
+                    # CSV: PLAYER_NAME, TEAM_ABBREVIATION
+                    return df
+        except Exception as e:
+            print(f"Error reading from DB: {e}. Falling back to CSV.")
+
     p = RAW / name
     if not p.exists():
         # Fallback for hoopR bundle naming

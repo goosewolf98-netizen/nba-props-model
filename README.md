@@ -32,6 +32,20 @@ Professional historical prop data is premium. To build your own archive:
 ### 3. Poisson Probability
 For discrete stats (REB, AST, STL, BLK, TPM), the model uses **Poisson distributions** instead of Normal approximations, ensuring sharp accuracy for low-count props.
 
+## Data Infrastructure & Collection
+
+The project now includes a SQLite database (`data/nba.db`) to store historical data persistently.
+
+### Database Updates
+To update the database with the latest stats, prop lines, and sentiment analysis:
+```bash
+python src/update_database.py
+```
+This script will:
+1.  Download latest boxscores from NBA API and upsert to `boxscores` table.
+2.  Ingest prop lines from `data/lines/props_lines.csv` to `prop_lines` table.
+3.  Scrape Reddit (r/nba, r/sportsbook) for sentiment (requires valid network/auth) to `reddit_sentiment` table.
+
 ## How to Use the Model
 
 ### Method 1: GitHub Actions (Recommended)
