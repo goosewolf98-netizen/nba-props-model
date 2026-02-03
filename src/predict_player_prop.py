@@ -11,13 +11,11 @@ from urllib.request import urlopen, Request
 import numpy as np
 import pandas as pd
 from joblib import load
-from scipy.stats import poisson
+
+from probability import calculate_probs
 
 ART_DIR = Path("artifacts")
 MODELS_DIR = Path("data/models")
-
-def normal_cdf(x: float) -> float:
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 def write_error(msg: str):
     ART_DIR.mkdir(parents=True, exist_ok=True)
@@ -467,18 +465,15 @@ def main():
 
         proj = minutes_adj * rate_adj
 
-        if args.stat in ["reb", "ast", "pra", "stl", "blk", "tpm"]:
-            # Sharp Poisson approach for discrete count stats
-            # Poisson handles the skew and discrete nature of these stats better than Normal
-            p_over = float(1.0 - poisson.cdf(args.line, proj))
-            p_under = float(poisson.cdf(args.line - 0.001, proj))
-            rmse = math.sqrt(proj) # Poisson variance is the mean
-        else:
-            # Normal approximation for higher-count stats (pts)
-            rmse = load_rmse_v2(args.stat)
-            z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
-            p_over = 1.0 - normal_cdf(z)
-            p_under = 1.0 - p_over
+        # Probability Step
+        rmse_input = None
+        if args.stat not in ["reb", "ast", "pra", "stl", "blk", "tpm"]:
+            rmse_input = load_rmse_v2(args.stat)
+
+        probs = calculate_probs(args.stat, proj, args.line, rmse=rmse_input)
+        p_over = probs['p_over']
+        p_under = probs['p_under']
+        rmse = probs['rmse_used']
 
         best_p = max(p_over, p_under)
         best_side = "PASS"

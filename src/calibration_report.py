@@ -5,8 +5,8 @@ import json
 import math
 import argparse
 import pandas as pd
-from scipy.stats import poisson
 
+from probability import calculate_probs
 
 ART_DIR = Path("artifacts")
 
@@ -27,13 +27,6 @@ def _normalize_market(market: str) -> str:
         "three pointers made": "tpm", "tpm": "tpm", "fg3m": "tpm"
     }
     return mapping.get(market, market)
-
-
-def _prob_over(proj: float, line: float, rmse: float) -> float:
-    if rmse <= 1e-9:
-        return 0.5
-    z = (line - proj) / rmse
-    return 0.5 * (1.0 - math.erf(z / math.sqrt(2.0)))
 
 
 def _load_rmse(stat: str) -> float:
@@ -121,11 +114,17 @@ def run_calibration(pred_path: Path, lines_path: Path) -> dict:
         proj = row["projection"]
         line = row["line"]
 
-        if stat in ["reb", "ast", "pra", "stl", "blk", "tpm"] and proj > 0:
-            return float(1.0 - poisson.cdf(line, proj))
+        # If projection is 0 or NaN, we can't prob meaningfully, assume 0.5 or 0.0?
+        if pd.isna(proj) or proj < 0:
+             return 0.5
 
-        rmse = _load_rmse(stat)
-        return _prob_over(proj, line, rmse)
+        # We pass RMSE only if needed (Normal), but calculate_probs handles None for discrete
+        rmse = None
+        if stat not in ["reb", "ast", "pra", "stl", "blk", "tpm"]:
+            rmse = _load_rmse(stat)
+
+        res = calculate_probs(stat, proj, line, rmse=rmse)
+        return res['p_over']
 
     valid["p_over"] = valid.apply(compute_p_over, axis=1)
     valid["outcome"] = (valid["actual"] > valid["line"]).astype(int)
