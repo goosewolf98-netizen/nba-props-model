@@ -21,7 +21,7 @@ Optional columns:
 The model now includes `src/fetch_live_odds_api.py`. To get real market info:
 1.  Get a free API key from [The Odds API](https://the-odds-api.com/).
 2.  Set it as a secret `THE_ODDS_API_KEY` in your GitHub repository.
-3.  The `player-query` workflow will automatically fetch live lines.
+3.  The **NBA Prediction** workflow will automatically fetch live lines.
 
 ### 2. Historical Lines (Backtesting)
 Professional historical prop data is premium. To build your own archive:
@@ -50,7 +50,7 @@ This script will:
 
 ### Method 1: GitHub Actions (Recommended)
 The easiest way to use the model is through the **Actions** tab in this repository:
-1.  Go to **Actions** -> **player-query**.
+1.  Go to **Actions** -> **NBA Prediction**.
 2.  Click **Run workflow**.
 3.  Enter the **Player Name**, **Stat**, and **Betting Line** (e.g., LeBron James, pts, 24.5).
 4.  The model will download the latest data, calculate "sharp" features, and output a detailed recommendation (OVER/UNDER/PASS).

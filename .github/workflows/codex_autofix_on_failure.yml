@@ -2,7 +2,7 @@ name: Codex auto-fix on bundle failure
 
 on:
   workflow_run:
-    workflows: ["player-query-bundle"]
+    workflows: ["NBA Prediction"]
     types: [completed]
   workflow_dispatch: {}
 
@@ -23,7 +23,7 @@ jobs:
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: nba-props-artifacts
+          name: prediction-results
           path: artifacts
 
       - name: Run Codex to fix
