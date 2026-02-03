@@ -12,3 +12,4 @@ kaggle
 nba_api
 pbpstats
 rapidfuzz
+pyyaml
