@@ -109,15 +109,9 @@ def main():
         _write_error("with_without: missing team usage data")
         return
 
-    top_usage = team_usage.groupby("team_abbr").apply(
-        lambda g: g.sort_values("pts", ascending=False).head(3)
-    ).reset_index(drop=True)
-    top_ast = team_usage.groupby("team_abbr").apply(
-        lambda g: g.sort_values("ast", ascending=False).head(3)
-    ).reset_index(drop=True)
-    top_reb = team_usage.groupby("team_abbr").apply(
-        lambda g: g.sort_values("reb", ascending=False).head(3)
-    ).reset_index(drop=True)
+    top_usage = team_usage.sort_values(["team_abbr", "pts"], ascending=[True, False]).groupby("team_abbr").head(3)
+    top_ast = team_usage.sort_values(["team_abbr", "ast"], ascending=[True, False]).groupby("team_abbr").head(3)
+    top_reb = team_usage.sort_values(["team_abbr", "reb"], ascending=[True, False]).groupby("team_abbr").head(3)
 
     top_usage_map = top_usage.groupby("team_abbr")["player"].apply(list).to_dict()
     top_ast_map = top_ast.groupby("team_abbr")["player"].apply(list).to_dict()
