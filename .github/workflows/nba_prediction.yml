@@ -77,7 +77,7 @@ jobs:
         # Continue on error so the workflow works even if Kaggle keys are missing
         continue-on-error: true
         run: |
-          python src/kaggle_download.py
+          python src/download_sources.py
           python src/normalize_kaggle_lineups.py
           python src/normalize_kaggle_shots.py
           python src/normalize_kaggle_injuries.py

@@ -1,0 +1,120 @@
+version: 1
+sources:
+  # ==============================================================================
+  # 1. Betting & Odds (Historical)
+  # ==============================================================================
+  - id: kaggle_nba_odds_data_2008_2023
+    kind: kaggle_dataset
+    dataset: christophertreasure/nba-odds-data
+    out_dir: data/kaggle/christophertreasure/nba-odds-data
+    notes: "NBA spreads/totals/moneyline 2008-2023 regular season."
+
+  - id: kaggle_nba_betting_data_2007_2024
+    kind: kaggle_dataset
+    dataset: cviaxmiwnptr/nba-betting-data-october-2007-to-june-2024
+    out_dir: data/kaggle/cviaxmiwnptr/nba-betting-data-october-2007-to-june-2024
+    notes: "NBA scores + spreads/totals/odds 2007-2024."
+
+  - id: kaggle_nba_odds_and_scores
+    kind: kaggle_dataset
+    dataset: erichqiu/nba-odds-and-scores
+    out_dir: data/external/kaggle/nba-odds-and-scores
+    notes: "Odds + scores (organized by year)."
+
+  - id: kaggle_nba_historical_stats_betting_2019_2024
+    kind: kaggle_dataset
+    dataset: ehallmar/nba-historical-stats-and-betting-data
+    out_dir: data/external/kaggle/nba-historical-stats-and-betting-data
+    notes: "Match stats + betting odds, 2019-2024 seasons."
+
+  - id: kaggle_nba_betting_lines_2021_2022
+    kind: kaggle_dataset
+    dataset: thedevastator/uncovering-hidden-trends-in-nba-betting-lines-20
+    out_dir: data/external/kaggle/nba-betting-lines-2021-2022
+    notes: "Betting lines/odds sample (Dec 2021–Dec 2022)."
+
+  # ==============================================================================
+  # 2. Play-by-Play & Shots
+  # ==============================================================================
+  - id: kaggle_nba_pbp_xocelyk
+    kind: kaggle_dataset
+    dataset: xocelyk/nba-pbp
+    out_dir: data/kaggle/xocelyk/nba-pbp
+    notes: "NBA Play-by-Play data (migrated from legacy)."
+
+  - id: kaggle_nba_shots_mexwell
+    kind: kaggle_dataset
+    dataset: mexwell/nba-shots
+    out_dir: data/kaggle/mexwell/nba-shots
+    notes: "NBA Shot data (migrated from legacy)."
+
+  - id: kaggle_nba_pbp_shots_1996_2021
+    kind: kaggle_dataset
+    dataset: brains14482/nba-playbyplay-and-shotdetails-data-19962021
+    out_dir: data/external/kaggle/nba-pbp-shots-1996-2021
+    notes: "Play-by-play + shot details (NBA/WNBA), 1996–2021."
+
+  # ==============================================================================
+  # 3. Stats & General Data
+  # ==============================================================================
+  - id: kaggle_basketball_wyattowalsh
+    kind: kaggle_dataset
+    dataset: wyattowalsh/basketball
+    out_dir: data/kaggle/wyattowalsh/basketball
+    notes: "Comprehensive basketball dataset (migrated from legacy)."
+
+  # ==============================================================================
+  # 4. Injuries
+  # ==============================================================================
+  - id: kaggle_nba_injury_stats_1951_2023
+    kind: kaggle_dataset
+    dataset: loganlauton/nba-injury-stats-1951-2023
+    out_dir: data/kaggle/loganlauton/nba-injury-stats-1951-2023
+    notes: "Historical injury stats 1951-2023 (migrated from legacy)."
+
+  - id: kaggle_nba_injury_data_2016_2025
+    kind: kaggle_dataset
+    dataset: jacquesoberweis/2016-2025-nba-injury-data
+    out_dir: data/kaggle/jacquesoberweis/2016-2025-nba-injury-data
+    notes: "Recent injury data 2016-2025 (migrated from legacy)."
+
+  # ==============================================================================
+  # 5. GitHub Repositories (Scrapers & Data)
+  # ==============================================================================
+  - id: github_sportsbookreview_scraper
+    kind: github_zip
+    url: https://github.com/FinnedAI/sportsbookreview-scraper/archive/refs/heads/master.zip
+    out_dir: data/external/github/sportsbookreview-scraper
+    notes: "SBR scraper + included odds datasets (check repo contents)."
+
+  - id: github_shufinskiy_nba_data_pbp
+    kind: github_zip
+    url: https://github.com/shufinskiy/nba_data/archive/refs/heads/master.zip
+    out_dir: data/external/github/shufinskiy-nba_data
+    notes: "Multi-source PBP + shots (stats.nba.com, data.nba.com, pbpstats)."
+
+  - id: github_pbpstats_library
+    kind: github_zip
+    url: https://github.com/dblackrun/pbpstats/archive/refs/heads/master.zip
+    out_dir: data/external/github/pbpstats
+    notes: "Library to scrape/parse NBA/WNBA/G-League play-by-play."
+
+  - id: github_awesome_nba_data
+    kind: github_zip
+    url: https://github.com/JovaniPink/awesome-nba-data/archive/refs/heads/master.zip
+    out_dir: data/external/github/awesome-nba-data
+    notes: "Curated list of NBA data sources/APIs."
+
+  - id: github_sportsbookreview_scraper_flancast90
+    kind: github_zip
+    url: https://github.com/flancast90/sportsbookreview-scraper/archive/refs/heads/master.zip
+    out_dir: data/external/github/sportsbookreview-scraper-flancast90
+    notes: "SBR scraper + odds history (NBA included)."
+
+  # ==============================================================================
+  # 6. Placeholders
+  # ==============================================================================
+  - id: props_lines_snapshot_daily
+    kind: snapshot_placeholder
+    out_dir: data/external/props_snapshots
+    notes: "We will ADD a collector to snapshot daily player prop lines going forward."
