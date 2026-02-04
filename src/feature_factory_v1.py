@@ -228,9 +228,19 @@ def build_features():
         "pace_raw":"opp_pace_raw"
     })
 
-    # join on game_id, exclude same team
-    m = t.merge(t2, on="game_id", how="left")
-    m = m[m["team_abbr"] != m["opp_abbr"]].copy()
+    # join on game_id + opp_abbr to get the specific opponent stats
+    if "opp_abbr" in t.columns and "opp_abbr" in t2.columns:
+        m = t.merge(t2, on=["game_id", "opp_abbr"], how="left")
+    else:
+        # Fallback if opp_abbr missing (shouldn't happen given ensure_col)
+        m = t.merge(t2, on="game_id", how="left")
+        # Handle collision if it occurred
+        opp_col = "opp_abbr"
+        if "opp_abbr_y" in m.columns:
+            opp_col = "opp_abbr_y"
+        m = m[m["team_abbr"] != m[opp_col]].copy()
+        if "opp_abbr_x" in m.columns:
+            m = m.rename(columns={"opp_abbr_x": "opp_abbr"})
 
     # defensive rating = opponent ORTG (same game possessions scale)
     m["drtg_raw"] = m["opp_ortg_raw"]

@@ -1,0 +1,33 @@
+SPORTSDATAIO_API_KEY missing; wrote empty injuries file to data/injuries/nba_injuries_master.csv
+Injuries master empty; wrote empty availability table.
+Saved with/without features to artifacts/with_without_features.parquet
+Saved opponent matchup features to artifacts/opponent_matchup_features.parquet
+Official injury report parse failed safely: "['team_abbr', 'player', 'status', 'reason'] not in index"
+Lineup cache fresh; skipping rebuild.
+PLAYER cols: ['game_id', 'season', 'season_type', 'game_date', 'game_date_time', 'athlete_id', 'athlete_display_name', 'team_id', 'team_name', 'team_location', 'team_short_display_name', 'min', 'field_goals_made', 'field_goals_attempted', 'three_point_field_goals_made', 'three_point_field_goals_attempted', 'free_throws_made', 'free_throws_attempted', 'offensive_rebounds', 'defensive_rebounds', 'rebounds', 'assists', 'steals', 'blocks', 'turnovers', 'fouls', 'plus_minus', 'points', 'starter', 'ejected', 'did_not_play', 'reason', 'active', 'athlete_jersey', 'athlete_short_name', 'athlete_headshot_href', 'athlete_position_name', 'athlete_position_abbreviation', 'team_display_name', 'team_uid', 'team_slug', 'team_logo', 'team_abbr', 'team_color', 'team_alternate_color', 'home_away', 'team_winner', 'team_score', 'opponent_team_id', 'opponent_team_name', 'opponent_team_location', 'opponent_team_display_name', 'opp_abbr', 'opponent_team_logo', 'opponent_team_color', 'opponent_team_alternate_color', 'opponent_team_score']
+TEAM cols: ['game_id', 'season', 'season_type', 'game_date', 'game_date_time', 'team_id', 'team_uid', 'team_slug', 'team_location', 'team_name', 'team_abbr', 'team_display_name', 'team_short_display_name', 'team_color', 'team_alternate_color', 'team_logo', 'team_home_away', 'team_score', 'team_winner', 'assists', 'blocks', 'defensive_rebounds', 'fast_break_points', 'field_goal_pct', 'field_goals_made', 'field_goals_attempted', 'flagrant_fouls', 'fouls', 'free_throw_pct', 'free_throws_made', 'free_throws_attempted', 'largest_lead', 'offensive_rebounds', 'points_in_paint', 'steals', 'team_turnovers', 'technical_fouls', 'three_point_field_goal_pct', 'three_point_field_goals_made', 'three_point_field_goals_attempted', 'total_rebounds', 'total_technical_fouls', 'total_turnovers', 'turnover_points', 'turnovers', 'opponent_team_id', 'opponent_team_uid', 'opponent_team_slug', 'opponent_team_location', 'opponent_team_name', 'opp_abbr', 'opponent_team_display_name', 'opponent_team_short_display_name', 'opponent_team_color', 'opponent_team_alternate_color', 'opponent_team_logo', 'opponent_team_score']
+SCHED cols: ['game_id', 'season', 'season_type', 'game_date', 'game_date_time', 'team_id', 'team_uid', 'team_slug', 'team_location', 'team_name', 'team_abbr', 'team_display_name', 'team_short_display_name', 'team_color', 'team_alternate_color', 'team_logo', 'team_home_away', 'team_score', 'team_winner', 'assists', 'blocks', 'defensive_rebounds', 'fast_break_points', 'field_goal_pct', 'field_goals_made', 'field_goals_attempted', 'flagrant_fouls', 'fouls', 'free_throw_pct', 'free_throws_made', 'free_throws_attempted', 'largest_lead', 'offensive_rebounds', 'points_in_paint', 'steals', 'team_turnovers', 'technical_fouls', 'three_point_field_goal_pct', 'three_point_field_goals_made', 'three_point_field_goals_attempted', 'total_rebounds', 'total_technical_fouls', 'total_turnovers', 'turnover_points', 'turnovers', 'opponent_team_id', 'opponent_team_uid', 'opponent_team_slug', 'opponent_team_location', 'opponent_team_name', 'opp_abbr', 'opponent_team_display_name', 'opponent_team_short_display_name', 'opponent_team_color', 'opponent_team_alternate_color', 'opponent_team_logo', 'opponent_team_score']
+Traceback (most recent call last):
+  File "/home/jules/.pyenv/versions/3.12.12/lib/python3.12/site-packages/pandas/core/indexes/base.py", line 3641, in get_loc
+    return self._engine.get_loc(casted_key)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "pandas/_libs/index.pyx", line 168, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/index.pyx", line 197, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7668, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7676, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'opp_abbr'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/app/src/feature_factory_v1.py", line 900, in <module>
+    build_features()
+  File "/app/src/feature_factory_v1.py", line 233, in build_features
+    m = m[m["team_abbr"] != m["opp_abbr"]].copy()
+                            ~^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.12/lib/python3.12/site-packages/pandas/core/frame.py", line 4378, in __getitem__
+    indexer = self.columns.get_loc(key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.12/lib/python3.12/site-packages/pandas/core/indexes/base.py", line 3648, in get_loc
+    raise KeyError(key) from err
+KeyError: 'opp_abbr'

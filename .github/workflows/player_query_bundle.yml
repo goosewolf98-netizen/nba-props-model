@@ -29,18 +29,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup R
-        uses: r-lib/actions/setup-r@v2
-
-      - name: Install system libraries for R packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
-
-      - name: Download NBA data bundle (R)
-        run: |
-          Rscript src/download_hoopr_nba_bundle.R
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -50,6 +38,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Download NBA data bundle (Python)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python src/download_data_python.py
 
       - name: Ensure artifacts folder
         run: |

@@ -1,0 +1,11 @@
+/app/src/sdi_props_lines.py:124: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  snapshot_path = SNAPSHOT_DIR / f"{datetime.utcnow().date().isoformat()}.csv"
+SPORTSDATAIO_API_KEY missing; wrote empty snapshots.
+Master props file empty; wrote empty closing file.
+/app/src/sdi_props_lines.py:124: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  snapshot_path = SNAPSHOT_DIR / f"{datetime.utcnow().date().isoformat()}.csv"
+SPORTSDATAIO_API_KEY missing; wrote empty snapshots.
+Master props file empty; wrote empty closing file.
+Saved threshold backtest summary: artifacts/threshold_backtest_summary.json
+Saved threshold backtest detail: artifacts/threshold_backtest_by_margin.csv
+Saved v2 artifacts: backtest_metrics_v2.json, walkforward_metrics_v2.json, walkforward_predictions_v2.csv, xgb_min.joblib, xgb_*_rate.joblib, feature_cols_v2.json

@@ -1,0 +1,17 @@
+{
+  "pts": {
+    "team_out_count_lt_2": 6.055949561071476,
+    "top_teammate_out_flag_0": 6.055949561071476,
+    "player_on_off_net_lt_2": 6.055949561071476
+  },
+  "reb": {
+    "team_out_count_lt_2": 2.502899902024965,
+    "top_teammate_out_flag_0": 2.502899902024965,
+    "player_on_off_net_lt_2": 2.502899902024965
+  },
+  "ast": {
+    "team_out_count_lt_2": 1.7863464957830124,
+    "top_teammate_out_flag_0": 1.7863464957830124,
+    "player_on_off_net_lt_2": 1.7863464957830124
+  }
+}
