@@ -4,6 +4,7 @@ import sys
 import pandas as pd
 import json
 from pathlib import Path
+from predict_player_prop import predict_player_prop
 
 def run_cmd(cmd):
     print(f"Running: {' '.join(cmd)}")
@@ -50,19 +51,9 @@ def main():
         line = row['line']
 
         try:
-            # We call the predict script and capture output
-            cmd = [sys.executable, "src/predict_player_prop.py", "--player", player, "--stat", stat, "--line", str(line)]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode == 0:
-                # The script prints JSON to stdout
-                output = proc.stdout.strip()
-                # Find the JSON part if there's other text
-                if "{" in output:
-                    json_str = output[output.find("{"):]
-                    res = json.loads(json_str)
-                    results.append(res)
-            else:
-                print(f"Failed to predict for {player} {stat}: {proc.stderr}")
+            # We call the predict function directly to benefit from model caching
+            res = predict_player_prop(player, stat, line)
+            results.append(res)
         except Exception as e:
             print(f"Error processing {player} {stat}: {e}")
 

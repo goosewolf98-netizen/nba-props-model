@@ -2,6 +2,7 @@ import json
 import math
 import argparse
 import re
+from functools import lru_cache
 import subprocess
 import sys
 import importlib.util
@@ -15,6 +16,14 @@ from scipy.stats import poisson
 
 ART_DIR = Path("artifacts")
 MODELS_DIR = Path("data/models")
+
+@lru_cache(maxsize=None)
+def get_model(path: Path):
+    return load(path)
+
+@lru_cache(maxsize=None)
+def get_feature_cols(path: Path):
+    return json.loads(path.read_text())
 
 def normal_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
@@ -368,6 +377,208 @@ def load_with_without_impacts(team_abbr: str, player_name: str, teammates_out: l
         "d_ast_pm_total": d_ast_total,
     }
 
+# ---------------- Prediction logic ----------------
+
+def predict_player_prop(player: str, stat: str, line: float):
+    feat_path = ART_DIR / "features_v1.parquet"
+    if not feat_path.exists():
+        raise FileNotFoundError("Missing artifacts/features_v1.parquet. Run Feature Factory first.")
+
+    df = pd.read_parquet(feat_path)
+    df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
+    df = df.dropna(subset=["game_date"])
+
+    last = find_last_row(df, player)
+
+    cols_path = ART_DIR / "feature_cols_v2.json"
+    min_model_path = ART_DIR / "xgb_min.joblib"
+    rate_model_path = ART_DIR / f"xgb_{stat}_rate.joblib"
+    if not (cols_path.exists() and min_model_path.exists() and rate_model_path.exists()):
+        raise FileNotFoundError("Missing v2 artifacts. Run training step.")
+
+    feature_cols = get_feature_cols(cols_path)
+    min_model = get_model(min_model_path)
+    rate_model = get_model(rate_model_path)
+
+    row = {c: float(last.get(c, 0.0)) for c in feature_cols}
+    X = pd.DataFrame([row]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    min_pred = float(np.clip(min_model.predict(X)[0], 0.0, 48.0))
+    X_rate = X.copy()
+    X_rate["min_pred_feature"] = min_pred
+    rate_pred = float(np.clip(rate_model.predict(X_rate)[0], 0.0, 10.0))
+
+    recent_minutes_roll = float(last.get("min_r5", last.get("min_r10", 0.0)))
+    rotation_out_count = float(last.get("rotation_out_count", 0.0))
+    starters_out_count = float(last.get("starters_out_count", 0.0))
+    role = "starter" if max(recent_minutes_roll, min_pred) >= 26 else "bench"
+    rotation_bump = rotation_out_count * (0.6 if role == "starter" else 0.35)
+    rotation_bump += starters_out_count * (0.2 if role == "starter" else 0.4)
+
+    teammates_out = load_teammates_out(
+        str(last.get("team_abbr", "")),
+        str(pd.to_datetime(last["game_date"]).date()),
+        str(last["player"]),
+    )
+    impacts = load_with_without_impacts(str(last.get("team_abbr", "")), str(last["player"]), teammates_out)
+
+    d_min_total = float(np.clip(impacts["d_min_total"], -6.0, 6.0))
+    d_rate_pm_total = impacts["d_pts_pm_total"]
+    if stat == "reb":
+        d_rate_pm_total = impacts["d_reb_pm_total"]
+    elif stat == "ast":
+        d_rate_pm_total = impacts["d_ast_pm_total"]
+    elif stat == "pra":
+        d_rate_pm_total = impacts["d_pts_pm_total"] + impacts["d_reb_pm_total"] + impacts["d_ast_pm_total"]
+
+    # Sharp Usage Redistribution Logic
+    # We calculate how much the player's Usage Rate is expected to increase
+    base_usg = float(last.get("usg_r10", 15.0))
+    if base_usg < 1.0: base_usg = 15.0 # fallback
+
+    # d_usg from historical with/without analysis
+    d_usg_total = 0.0
+    for b in impacts["bumps"]:
+        d_usg_total += float(b.get("d_usg", 0.0))
+
+    # Clip usg bump to avoid crazy projections
+    d_usg_total = float(np.clip(d_usg_total, -5.0, 8.0))
+    usg_adj_factor = (base_usg + d_usg_total) / base_usg
+
+    rate_pct = d_rate_pm_total / rate_pred if rate_pred > 1e-6 else 0.0
+    # Use a blend of empirical bump and theoretical usage redistribution
+    if stat == "pts":
+        # For points, USG redistribution is very relevant
+        rate_pct = 0.5 * rate_pct + 0.5 * (usg_adj_factor - 1.0)
+
+    rate_pct = float(np.clip(rate_pct, -0.15, 0.15))
+
+    minutes_base = min_pred
+    minutes_adj = float(np.clip(minutes_base + rotation_bump + d_min_total, 0.0, 44.0))
+    rate_adj = rate_pred * (1.0 + rate_pct)
+
+    pace_roll = float(last.get("team_pace_roll10", last.get("team_pace", 0.0)))
+    opp_pace = float(last.get("opp_pace", 0.0))
+    pace_diff = opp_pace - pace_roll
+    shot_profile_adj = 0.0
+    if stat == "pts":
+        three_share = float(last.get("three_att_share_10g", 0.0))
+        if pace_diff > 2.0 and three_share >= 0.4:
+            shot_profile_adj = min(0.03, pace_diff / 50.0)
+    rate_adj = rate_adj * (1.0 + shot_profile_adj)
+
+    proj = minutes_adj * rate_adj
+
+    if stat in ["reb", "ast", "pra", "stl", "blk", "tpm"]:
+        # Sharp Poisson approach for discrete count stats
+        # Poisson handles the skew and discrete nature of these stats better than Normal
+        p_over = float(1.0 - poisson.cdf(line, proj))
+        p_under = float(poisson.cdf(line - 0.001, proj))
+        rmse = math.sqrt(proj) # Poisson variance is the mean
+    else:
+        # Normal approximation for higher-count stats (pts)
+        rmse = load_rmse_v2(stat)
+        z = (line - proj) / rmse if rmse > 1e-9 else 0.0
+        p_over = 1.0 - normal_cdf(z)
+        p_under = 1.0 - p_over
+
+    best_p = max(p_over, p_under)
+    best_side = "PASS"
+    if best_p >= 0.55:
+        best_side = "OVER" if p_over >= p_under else "UNDER"
+
+    inj = injury_overlay(str(last["player"]))
+    availability_injury = load_injury_status(str(last["player"]))
+    market_ctx = load_market_context(str(last["player"]), stat)
+    edge_open = None
+    edge_close = None
+    if market_ctx.get("market_open_line") is not None:
+        edge_open = float(proj - market_ctx["market_open_line"])
+    if market_ctx.get("market_close_line") is not None:
+        edge_close = float(proj - market_ctx["market_close_line"])
+
+    opp_def_rating_roll = float(last.get("opp_def_rating_roll", last.get("opp_drtg_roll10", 0.0)))
+
+    if (availability_injury.get("status") and availability_injury.get("status").upper() == "OUT") or \
+       (inj.get("status") and inj.get("status").upper() == "OUT"):
+        best_side = "NO_BET"
+
+    edge = float(proj - float(line))
+
+    out = {
+        "model_version": "v2_minutes_x_rate + matchup_merge + availability_context + injury_overlay",
+        "player_query": player,
+        "matched_player": str(last["player"]),
+        "stat": stat,
+        "line": float(line),
+        "projection": float(proj),
+        "edge": edge,
+        "minutes_pred": float(minutes_base),
+        "minutes_projection": float(minutes_adj),
+        "rate_pred": float(rate_pred),
+        "rate_adj": float(rate_adj),
+        "rmse_used": float(rmse),
+        "p_over": float(p_over),
+        "p_under": float(p_under),
+        "recommendation": best_side,
+        "confidence_tier": tier(best_p) if best_side != "PASS" else "PASS",
+        "last_game_date_used": str(pd.to_datetime(last["game_date"]).date()),
+        "key_context": {
+            "teammates_out": teammates_out,
+            "opp_def_rating_roll": opp_def_rating_roll,
+            "pace_roll": pace_roll,
+            "recent_minutes_roll": recent_minutes_roll,
+        },
+        "context": {
+            "rest_days": float(last.get("rest_days", 0.0)),
+            "b2b": int(last.get("b2b", 0)),
+            "games_last_7d": float(last.get("games_last_7d", 0.0)),
+            "team_drtg": float(last.get("team_drtg", 0.0)),
+            "opp_drtg": float(last.get("opp_drtg", 0.0)),
+            "team_pace": float(last.get("team_pace", 0.0)),
+            "opp_pace": float(last.get("opp_pace", 0.0)),
+        },
+        "availability_context": {
+            "team_out_count": float(last.get("team_out_count", 0.0)),
+            "team_q_count": float(last.get("team_q_count", 0.0)),
+            "opp_out_count": float(last.get("opp_out_count", 0.0)),
+            "opp_q_count": float(last.get("opp_q_count", 0.0)),
+            "top_teammate_out_flag": float(last.get("top_teammate_out_flag", 0.0)),
+            "out_teammates_min_proxy": float(last.get("out_teammates_min_proxy", 0.0)),
+            "injury_report_status": availability_injury,
+        },
+        "lineup_context": {
+            "player_on_off_net": float(last.get("player_on_off_net", 0.0)),
+            "player_on_off_pace": float(last.get("player_on_off_pace", 0.0)),
+            "opp_def_net_recent": float(last.get("opp_def_net_recent", 0.0)),
+            "synergy_delta_proxy": float(last.get("synergy_delta_proxy", 0.0)),
+            "cache_timestamp_used": str(last.get("lineup_cache_timestamp", "")),
+        },
+        "market_context": {
+            "market_open_line": market_ctx.get("market_open_line"),
+            "market_open_odds": market_ctx.get("market_open_odds"),
+            "market_early_move": market_ctx.get("market_early_move"),
+            "market_close_line": market_ctx.get("market_close_line"),
+            "edge_vs_open": edge_open,
+            "edge_vs_close": edge_close,
+        },
+        "injury_overlay": inj,
+        "with_without_context": {
+            "minutes_base": float(minutes_base),
+            "minutes_adj": float(minutes_adj),
+            "minutes_role_adj": float(rotation_bump),
+            "minutes_with_without_adj": float(d_min_total),
+            "rate_pct_adj": float(rate_pct),
+            "usage_base": float(base_usg),
+            "usage_adj_delta": float(d_usg_total),
+            "shot_profile_adj": float(shot_profile_adj),
+            "role": role,
+            "bumps_applied": impacts["bumps"],
+            "note": impacts.get("note"),
+        },
+    }
+    return out
+
 # ---------------- Main ----------------
 
 def main():
@@ -378,203 +589,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        feat_path = ART_DIR / "features_v1.parquet"
-        if not feat_path.exists():
-            raise FileNotFoundError("Missing artifacts/features_v1.parquet. Run Feature Factory first.")
-
-        df = pd.read_parquet(feat_path)
-        df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
-        df = df.dropna(subset=["game_date"])
-
-        last = find_last_row(df, args.player)
-
-        cols_path = ART_DIR / "feature_cols_v2.json"
-        min_model_path = ART_DIR / "xgb_min.joblib"
-        rate_model_path = ART_DIR / f"xgb_{args.stat}_rate.joblib"
-        if not (cols_path.exists() and min_model_path.exists() and rate_model_path.exists()):
-            raise FileNotFoundError("Missing v2 artifacts. Run training step.")
-
-        feature_cols = json.loads(cols_path.read_text())
-        min_model = load(min_model_path)
-        rate_model = load(rate_model_path)
-
-        row = {c: float(last.get(c, 0.0)) for c in feature_cols}
-        X = pd.DataFrame([row]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
-
-        min_pred = float(np.clip(min_model.predict(X)[0], 0.0, 48.0))
-        X_rate = X.copy()
-        X_rate["min_pred_feature"] = min_pred
-        rate_pred = float(np.clip(rate_model.predict(X_rate)[0], 0.0, 10.0))
-
-        recent_minutes_roll = float(last.get("min_r5", last.get("min_r10", 0.0)))
-        rotation_out_count = float(last.get("rotation_out_count", 0.0))
-        starters_out_count = float(last.get("starters_out_count", 0.0))
-        role = "starter" if max(recent_minutes_roll, min_pred) >= 26 else "bench"
-        rotation_bump = rotation_out_count * (0.6 if role == "starter" else 0.35)
-        rotation_bump += starters_out_count * (0.2 if role == "starter" else 0.4)
-
-        teammates_out = load_teammates_out(
-            str(last.get("team_abbr", "")),
-            str(pd.to_datetime(last["game_date"]).date()),
-            str(last["player"]),
-        )
-        impacts = load_with_without_impacts(str(last.get("team_abbr", "")), str(last["player"]), teammates_out)
-
-        d_min_total = float(np.clip(impacts["d_min_total"], -6.0, 6.0))
-        d_rate_pm_total = impacts["d_pts_pm_total"]
-        if args.stat == "reb":
-            d_rate_pm_total = impacts["d_reb_pm_total"]
-        elif args.stat == "ast":
-            d_rate_pm_total = impacts["d_ast_pm_total"]
-        elif args.stat == "pra":
-            d_rate_pm_total = impacts["d_pts_pm_total"] + impacts["d_reb_pm_total"] + impacts["d_ast_pm_total"]
-
-        # Sharp Usage Redistribution Logic
-        # We calculate how much the player's Usage Rate is expected to increase
-        base_usg = float(last.get("usg_r10", 15.0))
-        if base_usg < 1.0: base_usg = 15.0 # fallback
-
-        # d_usg from historical with/without analysis
-        d_usg_total = 0.0
-        for b in impacts["bumps"]:
-            d_usg_total += float(b.get("d_usg", 0.0))
-
-        # Clip usg bump to avoid crazy projections
-        d_usg_total = float(np.clip(d_usg_total, -5.0, 8.0))
-        usg_adj_factor = (base_usg + d_usg_total) / base_usg
-
-        rate_pct = d_rate_pm_total / rate_pred if rate_pred > 1e-6 else 0.0
-        # Use a blend of empirical bump and theoretical usage redistribution
-        if args.stat == "pts":
-            # For points, USG redistribution is very relevant
-            rate_pct = 0.5 * rate_pct + 0.5 * (usg_adj_factor - 1.0)
-
-        rate_pct = float(np.clip(rate_pct, -0.15, 0.15))
-
-        minutes_base = min_pred
-        minutes_adj = float(np.clip(minutes_base + rotation_bump + d_min_total, 0.0, 44.0))
-        rate_adj = rate_pred * (1.0 + rate_pct)
-
-        pace_roll = float(last.get("team_pace_roll10", last.get("team_pace", 0.0)))
-        opp_pace = float(last.get("opp_pace", 0.0))
-        pace_diff = opp_pace - pace_roll
-        shot_profile_adj = 0.0
-        if args.stat == "pts":
-            three_share = float(last.get("three_att_share_10g", 0.0))
-            if pace_diff > 2.0 and three_share >= 0.4:
-                shot_profile_adj = min(0.03, pace_diff / 50.0)
-        rate_adj = rate_adj * (1.0 + shot_profile_adj)
-
-        proj = minutes_adj * rate_adj
-
-        if args.stat in ["reb", "ast", "pra", "stl", "blk", "tpm"]:
-            # Sharp Poisson approach for discrete count stats
-            # Poisson handles the skew and discrete nature of these stats better than Normal
-            p_over = float(1.0 - poisson.cdf(args.line, proj))
-            p_under = float(poisson.cdf(args.line - 0.001, proj))
-            rmse = math.sqrt(proj) # Poisson variance is the mean
-        else:
-            # Normal approximation for higher-count stats (pts)
-            rmse = load_rmse_v2(args.stat)
-            z = (args.line - proj) / rmse if rmse > 1e-9 else 0.0
-            p_over = 1.0 - normal_cdf(z)
-            p_under = 1.0 - p_over
-
-        best_p = max(p_over, p_under)
-        best_side = "PASS"
-        if best_p >= 0.55:
-            best_side = "OVER" if p_over >= p_under else "UNDER"
-
-        inj = injury_overlay(str(last["player"]))
-        availability_injury = load_injury_status(str(last["player"]))
-        market_ctx = load_market_context(str(last["player"]), args.stat)
-        edge_open = None
-        edge_close = None
-        if market_ctx.get("market_open_line") is not None:
-            edge_open = float(proj - market_ctx["market_open_line"])
-        if market_ctx.get("market_close_line") is not None:
-            edge_close = float(proj - market_ctx["market_close_line"])
-
-        opp_def_rating_roll = float(last.get("opp_def_rating_roll", last.get("opp_drtg_roll10", 0.0)))
-
-        if (availability_injury.get("status") and availability_injury.get("status").upper() == "OUT") or \
-           (inj.get("status") and inj.get("status").upper() == "OUT"):
-            best_side = "NO_BET"
-
-        edge = float(proj - float(args.line))
-
-        out = {
-            "model_version": "v2_minutes_x_rate + matchup_merge + availability_context + injury_overlay",
-            "player_query": args.player,
-            "matched_player": str(last["player"]),
-            "stat": args.stat,
-            "line": float(args.line),
-            "projection": float(proj),
-            "edge": edge,
-            "minutes_pred": float(minutes_base),
-            "minutes_projection": float(minutes_adj),
-            "rate_pred": float(rate_pred),
-            "rate_adj": float(rate_adj),
-            "rmse_used": float(rmse),
-            "p_over": float(p_over),
-            "p_under": float(p_under),
-            "recommendation": best_side,
-            "confidence_tier": tier(best_p) if best_side != "PASS" else "PASS",
-            "last_game_date_used": str(pd.to_datetime(last["game_date"]).date()),
-            "key_context": {
-                "teammates_out": teammates_out,
-                "opp_def_rating_roll": opp_def_rating_roll,
-                "pace_roll": pace_roll,
-                "recent_minutes_roll": recent_minutes_roll,
-            },
-            "context": {
-                "rest_days": float(last.get("rest_days", 0.0)),
-                "b2b": int(last.get("b2b", 0)),
-                "games_last_7d": float(last.get("games_last_7d", 0.0)),
-                "team_drtg": float(last.get("team_drtg", 0.0)),
-                "opp_drtg": float(last.get("opp_drtg", 0.0)),
-                "team_pace": float(last.get("team_pace", 0.0)),
-                "opp_pace": float(last.get("opp_pace", 0.0)),
-            },
-            "availability_context": {
-                "team_out_count": float(last.get("team_out_count", 0.0)),
-                "team_q_count": float(last.get("team_q_count", 0.0)),
-                "opp_out_count": float(last.get("opp_out_count", 0.0)),
-                "opp_q_count": float(last.get("opp_q_count", 0.0)),
-                "top_teammate_out_flag": float(last.get("top_teammate_out_flag", 0.0)),
-                "out_teammates_min_proxy": float(last.get("out_teammates_min_proxy", 0.0)),
-                "injury_report_status": availability_injury,
-            },
-            "lineup_context": {
-                "player_on_off_net": float(last.get("player_on_off_net", 0.0)),
-                "player_on_off_pace": float(last.get("player_on_off_pace", 0.0)),
-                "opp_def_net_recent": float(last.get("opp_def_net_recent", 0.0)),
-                "synergy_delta_proxy": float(last.get("synergy_delta_proxy", 0.0)),
-                "cache_timestamp_used": str(last.get("lineup_cache_timestamp", "")),
-            },
-            "market_context": {
-                "market_open_line": market_ctx.get("market_open_line"),
-                "market_open_odds": market_ctx.get("market_open_odds"),
-                "market_early_move": market_ctx.get("market_early_move"),
-                "market_close_line": market_ctx.get("market_close_line"),
-                "edge_vs_open": edge_open,
-                "edge_vs_close": edge_close,
-            },
-            "injury_overlay": inj,
-            "with_without_context": {
-                "minutes_base": float(minutes_base),
-                "minutes_adj": float(minutes_adj),
-                "minutes_role_adj": float(rotation_bump),
-                "minutes_with_without_adj": float(d_min_total),
-                "rate_pct_adj": float(rate_pct),
-                "usage_base": float(base_usg),
-                "usage_adj_delta": float(d_usg_total),
-                "shot_profile_adj": float(shot_profile_adj),
-                "role": role,
-                "bumps_applied": impacts["bumps"],
-                "note": impacts.get("note"),
-            },
-        }
+        out = predict_player_prop(args.player, args.stat, args.line)
 
         ART_DIR.mkdir(parents=True, exist_ok=True)
         (ART_DIR / "player_pick.json").write_text(json.dumps(out, indent=2))
