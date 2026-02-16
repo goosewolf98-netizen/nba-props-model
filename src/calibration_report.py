@@ -5,6 +5,7 @@ import json
 import math
 import argparse
 import pandas as pd
+import numpy as np
 from scipy.stats import poisson
 
 
@@ -138,8 +139,8 @@ def run_calibration(pred_path: Path, lines_path: Path) -> dict:
     brier = float(((valid["p_over"] - valid["outcome"]) ** 2).mean())
     valid["p_over_clipped"] = valid["p_over"].clip(1e-6, 1 - 1e-6)
     logloss = float(
-        -(valid["outcome"] * valid["p_over_clipped"].apply(math.log)
-          + (1 - valid["outcome"]) * (1 - valid["p_over_clipped"]).apply(math.log)).mean()
+        -(valid["outcome"] * np.log(valid["p_over_clipped"])
+          + (1 - valid["outcome"]) * np.log(1 - valid["p_over_clipped"])).mean()
     )
 
     bins = pd.cut(
